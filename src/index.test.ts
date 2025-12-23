@@ -5,34 +5,6 @@ import app from './index'
 // Mock Environment Setup
 // --------------------------------------------------------------------------
 
-const createMockEnv = () => ({
-  DB: {
-    get: vi.fn(),
-    put: vi.fn(),
-    delete: vi.fn()
-  },
-  VAULT: {
-    get: vi.fn(),
-    put: vi.fn(),
-    delete: vi.fn(),
-    list: vi.fn().mockResolvedValue({ objects: [] })
-  },
-  JWT_SECRET: 'test-secret-key-for-jwt'
-})
-
-// Helper: Create a valid JWT token for testing
-const createTestToken = async () => {
-  const { sign } = await import('hono/jwt')
-  return sign({
-    sub: 'user-123',
-    email: 'test@example.com',
-    name: 'Test User',
-    email_verified: true,
-    stamp: 'stamp-123',
-    exp: Math.floor(Date.now() / 1000) + 3600
-  }, 'test-secret-key-for-jwt')
-}
-
 // Helper: Create mock user data (camelCase)
 const createMockUser = (overrides = {}) => ({
   id: 'user-123',
@@ -47,6 +19,50 @@ const createMockUser = (overrides = {}) => ({
   updatedAt: '2024-01-01T00:00:00Z',
   ...overrides
 })
+
+// Default mock user for JWT validation
+const defaultMockUser = createMockUser()
+
+const createMockEnv = () => {
+  // Smart DB mock that returns appropriate data based on key prefix
+  const dbGet = vi.fn().mockImplementation((key: string) => {
+    if (key.startsWith('user:')) {
+      return Promise.resolve(JSON.stringify(defaultMockUser))
+    }
+    if (key.startsWith('vault_index:')) {
+      return Promise.resolve(JSON.stringify({ cipherIds: [], folderIds: [], revision: '' }))
+    }
+    return Promise.resolve(null)
+  })
+
+  return {
+    DB: {
+      get: dbGet,
+      put: vi.fn(),
+      delete: vi.fn()
+    },
+    VAULT: {
+      get: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn(),
+      list: vi.fn().mockResolvedValue({ objects: [] })
+    },
+    JWT_SECRET: 'test-secret-key-for-jwt'
+  }
+}
+
+// Helper: Create a valid JWT token for testing
+const createTestToken = async () => {
+  const { sign } = await import('hono/jwt')
+  return sign({
+    sub: 'user-123',
+    email: 'test@example.com',
+    name: 'Test User',
+    email_verified: true,
+    stamp: 'stamp-123',
+    exp: Math.floor(Date.now() / 1000) + 3600
+  }, 'test-secret-key-for-jwt')
+}
 
 // Helper: Create mock cipher data (camelCase)
 const createMockCipher = (overrides = {}) => ({
@@ -366,7 +382,11 @@ describe('NanoVault API', () => {
     it('creates a new cipher', async () => {
       const token = await createTestToken()
       mockEnv.VAULT.put.mockResolvedValue(undefined)
-      mockEnv.DB.get.mockResolvedValue(JSON.stringify({ cipherIds: [], folderIds: [], revision: '' }))
+      mockEnv.DB.get.mockImplementation((key: string) => {
+        if (key.startsWith('user:')) return Promise.resolve(JSON.stringify(defaultMockUser))
+        if (key.startsWith('vault_index:')) return Promise.resolve(JSON.stringify({ cipherIds: [], folderIds: [], revision: '' }))
+        return Promise.resolve(null)
+      })
       mockEnv.DB.put.mockResolvedValue(undefined)
 
       const res = await app.request('/api/ciphers', {
@@ -451,7 +471,11 @@ describe('NanoVault API', () => {
       const token = await createTestToken()
       mockEnv.VAULT.delete.mockResolvedValue(undefined)
       mockEnv.VAULT.list.mockResolvedValue({ objects: [] })
-      mockEnv.DB.get.mockResolvedValue(JSON.stringify({ cipherIds: ['cipher-123'], folderIds: [], revision: '' }))
+      mockEnv.DB.get.mockImplementation((key: string) => {
+        if (key.startsWith('user:')) return Promise.resolve(JSON.stringify(defaultMockUser))
+        if (key.startsWith('vault_index:')) return Promise.resolve(JSON.stringify({ cipherIds: ['cipher-123'], folderIds: [], revision: '' }))
+        return Promise.resolve(null)
+      })
       mockEnv.DB.put.mockResolvedValue(undefined)
 
       const res = await app.request('/api/ciphers/cipher-123', {
@@ -500,7 +524,11 @@ describe('NanoVault API', () => {
     it('imports ciphers and folders', async () => {
       const token = await createTestToken()
       mockEnv.VAULT.put.mockResolvedValue(undefined)
-      mockEnv.DB.get.mockResolvedValue(JSON.stringify({ cipherIds: [], folderIds: [], revision: '' }))
+      mockEnv.DB.get.mockImplementation((key: string) => {
+        if (key.startsWith('user:')) return Promise.resolve(JSON.stringify(defaultMockUser))
+        if (key.startsWith('vault_index:')) return Promise.resolve(JSON.stringify({ cipherIds: [], folderIds: [], revision: '' }))
+        return Promise.resolve(null)
+      })
       mockEnv.DB.put.mockResolvedValue(undefined)
 
       const res = await app.request('/api/ciphers/import', {
@@ -537,7 +565,11 @@ describe('NanoVault API', () => {
     it('creates a new folder', async () => {
       const token = await createTestToken()
       mockEnv.VAULT.put.mockResolvedValue(undefined)
-      mockEnv.DB.get.mockResolvedValue(JSON.stringify({ cipherIds: [], folderIds: [], revision: '' }))
+      mockEnv.DB.get.mockImplementation((key: string) => {
+        if (key.startsWith('user:')) return Promise.resolve(JSON.stringify(defaultMockUser))
+        if (key.startsWith('vault_index:')) return Promise.resolve(JSON.stringify({ cipherIds: [], folderIds: [], revision: '' }))
+        return Promise.resolve(null)
+      })
       mockEnv.DB.put.mockResolvedValue(undefined)
 
       const res = await app.request('/api/folders', {
@@ -559,7 +591,11 @@ describe('NanoVault API', () => {
     it('creates folder with PascalCase name', async () => {
       const token = await createTestToken()
       mockEnv.VAULT.put.mockResolvedValue(undefined)
-      mockEnv.DB.get.mockResolvedValue(JSON.stringify({ cipherIds: [], folderIds: [], revision: '' }))
+      mockEnv.DB.get.mockImplementation((key: string) => {
+        if (key.startsWith('user:')) return Promise.resolve(JSON.stringify(defaultMockUser))
+        if (key.startsWith('vault_index:')) return Promise.resolve(JSON.stringify({ cipherIds: [], folderIds: [], revision: '' }))
+        return Promise.resolve(null)
+      })
       mockEnv.DB.put.mockResolvedValue(undefined)
 
       const res = await app.request('/api/folders', {
@@ -631,7 +667,11 @@ describe('NanoVault API', () => {
     it('deletes a folder', async () => {
       const token = await createTestToken()
       mockEnv.VAULT.delete.mockResolvedValue(undefined)
-      mockEnv.DB.get.mockResolvedValue(JSON.stringify({ cipherIds: [], folderIds: ['folder-123'], revision: '' }))
+      mockEnv.DB.get.mockImplementation((key: string) => {
+        if (key.startsWith('user:')) return Promise.resolve(JSON.stringify(defaultMockUser))
+        if (key.startsWith('vault_index:')) return Promise.resolve(JSON.stringify({ cipherIds: [], folderIds: ['folder-123'], revision: '' }))
+        return Promise.resolve(null)
+      })
       mockEnv.DB.put.mockResolvedValue(undefined)
 
       const res = await app.request('/api/folders/folder-123', {

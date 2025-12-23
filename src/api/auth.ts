@@ -224,6 +224,11 @@ auth.post('/identity/connect/token', async (c) => {
                 const user = await getUser(c.env.DB, payload.email as string)
                 if (!user) throw new Error('User deleted')
 
+                // Verify security stamp - invalidates refresh tokens after password change
+                if (payload.stamp !== user.securityStamp) {
+                    return c.json({ error: 'invalid_grant', error_description: 'Token has been revoked' }, 400)
+                }
+
                 const newAccessToken = await sign(buildJwtPayload(user, ACCESS_TOKEN_TTL), secret)
                 const newRefreshToken = await sign(buildJwtPayload(user, REFRESH_TOKEN_TTL), secret)
 

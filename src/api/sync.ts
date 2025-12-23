@@ -10,11 +10,12 @@
  */
 
 import { Hono } from 'hono'
-import type { Bindings, UserData, ProfileData, SyncResponse } from '../types'
+import type { Bindings, UserData, ProfileData, SyncResponse, DomainsData, GlobalEquivalentDomain } from '../types'
 import { getUser } from '../storage/kv'
 import { listCiphers, listFolders } from '../storage/s3'
 import { createJwtMiddleware } from '../utils/auth'
 import { errorResponse } from './auth'
+import { GLOBAL_EQUIVALENT_DOMAINS } from '../constants/domains'
 
 const sync = new Hono<{ Bindings: Bindings }>()
 
@@ -87,14 +88,22 @@ sync.get('/api/sync', createJwtMiddleware, async (c) => {
         listFolders(c.env.VAULT, userId)
     ])
 
+    // Build domains response with user's settings
+    const excludedGlobalTypes = user.excludedGlobalEquivalentDomains ?? []
+    const globalEquivalentDomains: GlobalEquivalentDomain[] = GLOBAL_EQUIVALENT_DOMAINS.map(g => ({
+        type: g.type,
+        domains: g.domains,
+        excluded: excludedGlobalTypes.includes(g.type)
+    }))
+
     return c.json<SyncResponse>({
         object: 'sync',
         profile: buildProfile(user),
         folders: folders,
         ciphers: ciphers,
         domains: {
-            equivalentDomains: [],
-            globalEquivalentDomains: [],
+            equivalentDomains: user.equivalentDomains ?? [],
+            globalEquivalentDomains,
             object: 'domains'
         }
     })

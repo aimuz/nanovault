@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "test": "vitest run",
-    "dev": "wrangler dev --https-key-path localhost.key --https-cert-path localhost.crt",
+    "dev": "wrangler dev --https-key-path localhost.key --https-cert-path localhost.crt --minify",
     "deploy": "wrangler deploy"
   },
   "repository": {

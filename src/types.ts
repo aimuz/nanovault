@@ -74,6 +74,9 @@ export interface UserData {
   culture: string
   createdAt: string
   updatedAt: string
+  // Domain settings
+  equivalentDomains?: string[][]  // User-defined equivalent domain groups
+  excludedGlobalEquivalentDomains?: number[]  // Excluded global domain types
 }
 
 // --------------------------------------------------------------------------
@@ -235,9 +238,15 @@ export interface ProfileData {
 }
 
 export interface DomainsData {
-  equivalentDomains: any[]
-  globalEquivalentDomains: any[]
+  equivalentDomains: string[][]  // User-defined equivalent domain groups
+  globalEquivalentDomains: GlobalEquivalentDomain[]
   object: string
+}
+
+export interface GlobalEquivalentDomain {
+  type: number
+  domains: string[]
+  excluded: boolean
 }
 
 // --------------------------------------------------------------------------

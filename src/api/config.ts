@@ -5,10 +5,11 @@
  */
 
 import { Hono } from 'hono'
-import type { Bindings } from '../types'
+import type { Bindings, DomainsData, GlobalEquivalentDomain } from '../types'
 import { getUser, putUser } from '../storage/kv'
 import { errorResponse } from './auth'
 import { createJwtMiddleware } from '../utils/auth'
+import { GLOBAL_EQUIVALENT_DOMAINS } from '../constants/domains'
 
 const config = new Hono<{ Bindings: Bindings }>()
 
@@ -18,23 +19,18 @@ const config = new Hono<{ Bindings: Bindings }>()
 
 config.get('/api/config', (c) => {
     const baseUrl = new URL(c.req.url).origin
+    const environment = {
+        vault: baseUrl,
+        api: baseUrl,
+        identity: baseUrl,
+        notifications: baseUrl,
+        sso: ''
+    }
     return c.json({
         settings: {
-            environment: {
-                vault: baseUrl,
-                api: baseUrl,
-                identity: baseUrl,
-                notifications: baseUrl,
-                sso: ''
-            }
+            environment
         },
-        environment: {
-            vault: baseUrl,
-            api: baseUrl,
-            identity: baseUrl,
-            notifications: baseUrl,
-            sso: ''
-        },
+        environment,
         version: '2.0.0',
         object: 'config'
     })
@@ -71,12 +67,88 @@ config.get('/api/organizations/*/policies/token', (c) => c.json([], 200))
 config.get('/notifications/hub', (c) => c.json({ message: 'Notifications not supported' }, 200))
 config.get('/notifications/hub/negotiate', (c) => c.json({ connectionId: '', availableTransports: [] }, 200))
 
-// Settings/Domains stub
-config.get('/api/settings/domains', (c) => c.json({
-    equivalentDomains: [],
-    globalEquivalentDomains: [],
-    object: 'domains'
-}))
+// --------------------------------------------------------------------------
+// Settings/Domains (Protected)
+// --------------------------------------------------------------------------
+
+// Helper: Build domains response with user's settings
+const buildDomainsResponse = (
+    userEquivalentDomains: string[][] = [],
+    excludedGlobalTypes: number[] = []
+): DomainsData => {
+    const globalEquivalentDomains: GlobalEquivalentDomain[] = GLOBAL_EQUIVALENT_DOMAINS.map(g => ({
+        type: g.type,
+        domains: g.domains,
+        excluded: excludedGlobalTypes.includes(g.type)
+    }))
+
+    return {
+        equivalentDomains: userEquivalentDomains,
+        globalEquivalentDomains,
+        object: 'domains'
+    }
+}
+
+// GET /api/settings/domains - Get user's domain settings
+config.get('/api/settings/domains', createJwtMiddleware, async (c) => {
+    const payload = c.get('jwtPayload')
+    const user = await getUser(c.env.DB, payload.email)
+    if (!user) return errorResponse(c, 'User not found', 404)
+
+    return c.json(buildDomainsResponse(
+        user.equivalentDomains ?? [],
+        user.excludedGlobalEquivalentDomains ?? []
+    ))
+})
+
+// Helper: Parse and validate domain settings from request body
+const parseDomainSettings = (body: any): {
+    equivalentDomains: string[][],
+    excludedGlobalTypes: number[],
+    error?: string
+} => {
+    const equivalentDomains = body.equivalentDomains ?? body.EquivalentDomains ?? []
+    const globalEquivalentDomains = body.globalEquivalentDomains ?? body.GlobalEquivalentDomains ?? []
+
+    // Validate equivalentDomains is an array of string arrays
+    if (!Array.isArray(equivalentDomains)) {
+        return { equivalentDomains: [], excludedGlobalTypes: [], error: 'equivalentDomains must be an array' }
+    }
+    for (const group of equivalentDomains) {
+        if (!Array.isArray(group) || !group.every(d => typeof d === 'string')) {
+            return { equivalentDomains: [], excludedGlobalTypes: [], error: 'Each equivalentDomains group must be an array of strings' }
+        }
+    }
+
+    // Extract excluded global domain types
+    const excludedGlobalTypes: number[] = Array.isArray(globalEquivalentDomains)
+        ? globalEquivalentDomains
+            .filter(g => g && typeof g.type === 'number' && g.excluded === true)
+            .map(g => g.type)
+        : []
+
+    return { equivalentDomains, excludedGlobalTypes }
+}
+
+// PUT/POST /api/settings/domains - Update user's domain settings
+config.on(['PUT', 'POST'], '/api/settings/domains', createJwtMiddleware, async (c) => {
+    const payload = c.get('jwtPayload')
+    const user = await getUser(c.env.DB, payload.email)
+    if (!user) return errorResponse(c, 'User not found', 404)
+
+    const body = await c.req.json<any>()
+    const { equivalentDomains, excludedGlobalTypes, error } = parseDomainSettings(body)
+
+    if (error) return errorResponse(c, error, 400)
+
+    user.equivalentDomains = equivalentDomains
+    user.excludedGlobalEquivalentDomains = excludedGlobalTypes
+    user.updatedAt = new Date().toISOString()
+
+    await putUser(c.env.DB, user)
+
+    return c.json(buildDomainsResponse(equivalentDomains, excludedGlobalTypes))
+})
 
 // Emergency Access stubs
 config.get('/api/emergency-access/trusted', (c) => c.json({

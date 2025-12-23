@@ -385,6 +385,130 @@ describe('Integration: Auth Flow', () => {
             expect(data.error).toBe('invalid_grant')
         })
     })
+
+    describe('Password Change Token Invalidation', () => {
+        let accessToken: string
+        let refreshToken: string
+
+        beforeEach(async () => {
+            // Register a user
+            await app.request('/api/accounts/register', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    email: 'pwchange@example.com',
+                    masterPasswordHash: 'oldHash123',
+                    key: 'oldKey123'
+                })
+            }, env)
+
+            // Login to get tokens
+            const loginRes = await app.request('/identity/connect/token', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: new URLSearchParams({
+                    grant_type: 'password',
+                    username: 'pwchange@example.com',
+                    password: 'oldHash123'
+                }).toString()
+            }, env)
+
+            const loginData = await loginRes.json() as any
+            accessToken = loginData.access_token
+            refreshToken = loginData.refresh_token
+        })
+
+        it('invalidates access token after password change', async () => {
+            // Change password
+            const changeRes = await app.request('/api/accounts/password', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${accessToken}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    masterPasswordHash: 'oldHash123',
+                    newMasterPasswordHash: 'newHash456',
+                    key: 'newKey456'
+                })
+            }, env)
+            expect(changeRes.status).toBe(200)
+
+            // Old access token should now be rejected
+            const syncRes = await app.request('/api/sync', {
+                method: 'GET',
+                headers: { 'Authorization': `Bearer ${accessToken}` }
+            }, env)
+
+            expect(syncRes.status).toBe(401)
+            const data = await syncRes.json() as any
+            expect(data.error_description).toContain('revoked')
+        })
+
+        it('invalidates refresh token after password change', async () => {
+            // Change password
+            const changeRes = await app.request('/api/accounts/password', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${accessToken}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    masterPasswordHash: 'oldHash123',
+                    newMasterPasswordHash: 'newHash456',
+                    key: 'newKey456'
+                })
+            }, env)
+            expect(changeRes.status).toBe(200)
+
+            // Old refresh token should now be rejected
+            const refreshRes = await app.request('/identity/connect/token', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: new URLSearchParams({
+                    grant_type: 'refresh_token',
+                    refresh_token: refreshToken
+                }).toString()
+            }, env)
+
+            expect(refreshRes.status).toBe(400)
+            const data = await refreshRes.json() as any
+            expect(data.error).toBe('invalid_grant')
+            expect(data.error_description).toContain('revoked')
+        })
+
+        it('allows login with new password after change', async () => {
+            // Change password
+            await app.request('/api/accounts/password', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${accessToken}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    masterPasswordHash: 'oldHash123',
+                    newMasterPasswordHash: 'newHash456',
+                    key: 'newKey456'
+                })
+            }, env)
+
+            // Login with new password should work
+            const loginRes = await app.request('/identity/connect/token', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: new URLSearchParams({
+                    grant_type: 'password',
+                    username: 'pwchange@example.com',
+                    password: 'newHash456'
+                }).toString()
+            }, env)
+
+            expect(loginRes.status).toBe(200)
+            const data = await loginRes.json() as any
+            expect(data.access_token).toBeDefined()
+            expect(data.key).toBe('newKey456')
+        })
+    })
 })
 
 // =============================================================================
@@ -1048,7 +1172,6 @@ describe('Integration: Config & Stubs', () => {
             { path: '/api/devices/knowndevice', method: 'GET' },
             { path: '/api/two-factor', method: 'GET' },
             { path: '/api/accounts/password-hint', method: 'POST' },
-            { path: '/api/settings/domains', method: 'GET' },
             { path: '/api/emergency-access/trusted', method: 'GET' },
             { path: '/api/emergency-access/granted', method: 'GET' },
             { path: '/notifications/hub', method: 'GET' },
@@ -1089,6 +1212,145 @@ describe('Integration: Config & Stubs', () => {
 
                 expect(res.status).toBe(204)
             })
+        })
+    })
+
+    describe('Settings Domains (Protected)', () => {
+        let accessToken: string
+
+        beforeEach(async () => {
+            // Register and login for protected endpoints
+            await app.request('/api/accounts/register', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    email: 'domains@example.com',
+                    masterPasswordHash: 'domainsHash',
+                    key: 'domainsKey'
+                })
+            }, env)
+
+            const loginRes = await app.request('/identity/connect/token', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: new URLSearchParams({
+                    grant_type: 'password',
+                    username: 'domains@example.com',
+                    password: 'domainsHash'
+                }).toString()
+            }, env)
+            const loginData = await loginRes.json() as any
+            accessToken = loginData.access_token
+        })
+
+        it('GET returns domains with globalEquivalentDomains list', async () => {
+            const res = await app.request('/api/settings/domains', {
+                method: 'GET',
+                headers: { 'Authorization': `Bearer ${accessToken}` }
+            }, env)
+
+            expect(res.status).toBe(200)
+            const data = await res.json() as any
+
+            expect(data.object).toBe('domains')
+            expect(data.equivalentDomains).toEqual([])
+            expect(data.globalEquivalentDomains).toBeDefined()
+            expect(Array.isArray(data.globalEquivalentDomains)).toBe(true)
+            expect(data.globalEquivalentDomains.length).toBeGreaterThan(0)
+
+            // Check global domain structure
+            const googleDomain = data.globalEquivalentDomains.find((g: any) => g.type === 0)
+            expect(googleDomain).toBeDefined()
+            expect(googleDomain.domains).toContain('google.com')
+            expect(googleDomain.excluded).toBe(false)
+        })
+
+        it('PUT updates custom equivalent domains', async () => {
+            const res = await app.request('/api/settings/domains', {
+                method: 'PUT',
+                headers: {
+                    'Authorization': `Bearer ${accessToken}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    equivalentDomains: [
+                        ['mysite.com', 'mysite.org', 'mysite.net']
+                    ],
+                    globalEquivalentDomains: []
+                })
+            }, env)
+
+            expect(res.status).toBe(200)
+            const data = await res.json() as any
+
+            expect(data.equivalentDomains).toHaveLength(1)
+            expect(data.equivalentDomains[0]).toContain('mysite.com')
+        })
+
+        it('PUT updates excluded global domains', async () => {
+            const res = await app.request('/api/settings/domains', {
+                method: 'PUT',
+                headers: {
+                    'Authorization': `Bearer ${accessToken}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    equivalentDomains: [],
+                    globalEquivalentDomains: [
+                        { type: 0, excluded: true },  // Exclude Google
+                        { type: 3, excluded: true }   // Exclude Microsoft
+                    ]
+                })
+            }, env)
+
+            expect(res.status).toBe(200)
+            const data = await res.json() as any
+
+            const googleDomain = data.globalEquivalentDomains.find((g: any) => g.type === 0)
+            const msDomain = data.globalEquivalentDomains.find((g: any) => g.type === 3)
+            const appleDomain = data.globalEquivalentDomains.find((g: any) => g.type === 1)
+
+            expect(googleDomain.excluded).toBe(true)
+            expect(msDomain.excluded).toBe(true)
+            expect(appleDomain.excluded).toBe(false)
+        })
+
+        it('persists domain settings across requests', async () => {
+            // Set domains
+            await app.request('/api/settings/domains', {
+                method: 'PUT',
+                headers: {
+                    'Authorization': `Bearer ${accessToken}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    equivalentDomains: [['a.com', 'b.com']],
+                    globalEquivalentDomains: [{ type: 5, excluded: true }]
+                })
+            }, env)
+
+            // Get domains
+            const res = await app.request('/api/settings/domains', {
+                method: 'GET',
+                headers: { 'Authorization': `Bearer ${accessToken}` }
+            }, env)
+
+            expect(res.status).toBe(200)
+            const data = await res.json() as any
+
+            expect(data.equivalentDomains).toHaveLength(1)
+            expect(data.equivalentDomains[0]).toContain('a.com')
+
+            const bingDomain = data.globalEquivalentDomains.find((g: any) => g.type === 5)
+            expect(bingDomain.excluded).toBe(true)
+        })
+
+        it('requires authentication', async () => {
+            const res = await app.request('/api/settings/domains', {
+                method: 'GET'
+            }, env)
+
+            expect(res.status).toBe(401)
         })
     })
 })
