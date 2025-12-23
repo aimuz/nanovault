@@ -1,33 +1,95 @@
 /**
- * Ciphers API Module
+ * Ciphers Handlers Module
  * 
- * Handles: CRUD operations for vault items (ciphers)
- * 
- * Atomicity Strategy:
- * - Create: Index first, then data (orphan index is safe, synced as empty)
- * - Delete: Data first, then index (missing index means item doesn't appear)
- * - Import: Best-effort with collected errors
+ * Exports handler functions for: CRUD operations for vault items (ciphers)
  */
 
-import { Hono } from 'hono'
+import { Context } from 'hono'
 import type { Bindings, Cipher, Folder } from '../types'
 import { addCipherToIndex, removeCipherFromIndex, addFolderToIndex } from '../storage/kv'
 import { getCipher, putCipher, deleteCipher, deleteAllAttachments, putFolder } from '../storage/s3'
 import { errorResponse } from './auth'
-import { createJwtMiddleware } from '../utils/auth'
-import { buildCipher, validateCipher } from '../utils/cipher'
+import { notifyCipherCreate, notifyCipherUpdate, notifyCipherDelete } from './push'
 
-const ciphers = new Hono<{ Bindings: Bindings }>()
+type AppContext = Context<{ Bindings: Bindings }>
 
-// Apply JWT middleware to cipher routes only
-ciphers.use('/api/ciphers/*', createJwtMiddleware)
-ciphers.use('/api/ciphers', createJwtMiddleware)
+
+/**
+ * Options for building a cipher object.
+ */
+interface BuildCipherOptions {
+    /** Existing cipher to merge with (for updates) */
+    existing?: Cipher | null
+    /** Override the cipher ID */
+    id?: string
+    /** Creation timestamp (defaults to now) */
+    creationDate?: string
+}
+
+/**
+ * Builds a normalized Cipher object from request body.
+ * 
+ * @param body - Raw request body from client (camelCase)
+ * @param opts - Optional build configuration
+ * @returns A normalized Cipher object
+ */
+const buildCipher = (body: Record<string, any>, opts: BuildCipherOptions = {}): Cipher => {
+    const { existing, id, creationDate } = opts
+    const now = new Date().toISOString()
+
+    return {
+        id: id ?? body.id ?? crypto.randomUUID(),
+        type: body.type ?? existing?.type ?? 1,
+        organizationId: body.organizationId ?? null,
+        folderId: body.folderId ?? null,
+        favorite: body.favorite ?? false,
+        reprompt: body.reprompt ?? 0,
+        name: body.name ?? '',
+        notes: body.notes ?? null,
+        fields: body.fields ?? null,
+        login: body.login ?? null,
+        card: body.card ?? null,
+        identity: body.identity ?? null,
+        secureNote: body.secureNote ?? null,
+        sshKey: body.sshKey ?? null,
+        revisionDate: now,
+        creationDate: creationDate ?? existing?.creationDate ?? now,
+        deletedDate: null,
+        archivedDate: body.archivedDate ?? null,
+        key: body.key ?? null,
+        passwordHistory: body.passwordHistory ?? existing?.passwordHistory ?? null,
+        edit: true,
+        viewPassword: true,
+        organizationUseTotp: false,
+        data: body.data,
+        object: 'cipher',
+        attachments: body.attachments ?? null,
+        collectionIds: body.collectionIds ?? [],
+    }
+}
+
+/**
+ * Validates that a cipher has required fields.
+ * 
+ * @param cipher - The cipher to validate
+ * @returns Error message if invalid, null if valid
+ */
+const validateCipher = (cipher: Cipher): string | null => {
+    if (cipher.type === undefined) {
+        return 'Invalid cipher data: Type required'
+    }
+    if (!cipher.name) {
+        return 'Invalid cipher data: Name required'
+    }
+    return null
+}
+
 
 // --------------------------------------------------------------------------
-// Create Cipher
+// Create Cipher Handler
 // --------------------------------------------------------------------------
 
-ciphers.post('/api/ciphers', async (c) => {
+export const handleCreate = async (c: AppContext) => {
     const payload = c.get('jwtPayload')
     const userId = payload.sub as string
     const body = await c.req.json<any>()
@@ -44,14 +106,16 @@ ciphers.post('/api/ciphers', async (c) => {
         addCipherToIndex(c.env.DB, userId, newCipher.id)
     ])
 
+    notifyCipherCreate(c.env, userId, newCipher.id, newCipher.revisionDate)
+
     return c.json(newCipher)
-})
+}
 
 // --------------------------------------------------------------------------
-// Import (Bulk Create)
+// Import Handler (Bulk Create)
 // --------------------------------------------------------------------------
 
-ciphers.post('/api/ciphers/import', async (c) => {
+export const handleImport = async (c: AppContext) => {
     const payload = c.get('jwtPayload')
     const userId = payload.sub as string
     const body = await c.req.json<any>()
@@ -110,13 +174,13 @@ ciphers.post('/api/ciphers/import', async (c) => {
         folders: importedFolders,
         success: true
     })
-})
+}
 
 // --------------------------------------------------------------------------
-// Get Cipher
+// Get Cipher Handler
 // --------------------------------------------------------------------------
 
-ciphers.get('/api/ciphers/:id', async (c) => {
+export const handleGet = async (c: AppContext) => {
     const payload = c.get('jwtPayload')
     const userId = payload.sub as string
     const cipherId = c.req.param('id')
@@ -127,13 +191,13 @@ ciphers.get('/api/ciphers/:id', async (c) => {
     }
 
     return c.json(cipher)
-})
+}
 
 // --------------------------------------------------------------------------
-// Update Cipher
+// Update Cipher Handler
 // --------------------------------------------------------------------------
 
-ciphers.put('/api/ciphers/:id', async (c) => {
+export const handleUpdate = async (c: AppContext) => {
     const payload = c.get('jwtPayload')
     const userId = payload.sub as string
     const cipherId = c.req.param('id')
@@ -156,14 +220,16 @@ ciphers.put('/api/ciphers/:id', async (c) => {
 
     await Promise.all(promises)
 
+    notifyCipherUpdate(c.env, userId, updatedCipher.id, updatedCipher.revisionDate)
+
     return c.json(updatedCipher)
-})
+}
 
 // --------------------------------------------------------------------------
-// Delete Cipher
+// Delete Cipher Handler
 // --------------------------------------------------------------------------
 
-ciphers.delete('/api/ciphers/:id', async (c) => {
+export const handleDelete = async (c: AppContext) => {
     const payload = c.get('jwtPayload')
     const userId = payload.sub as string
     const cipherId = c.req.param('id')
@@ -175,14 +241,16 @@ ciphers.delete('/api/ciphers/:id', async (c) => {
 
     await removeCipherFromIndex(c.env.DB, userId, cipherId)
 
+    notifyCipherDelete(c.env, userId, cipherId)
+
     return c.json({}, 200)
-})
+}
 
 // --------------------------------------------------------------------------
-// Soft Delete (move to trash)
+// Soft Delete Handler (move to trash)
 // --------------------------------------------------------------------------
 
-ciphers.put('/api/ciphers/:id/delete', async (c) => {
+export const handleSoftDelete = async (c: AppContext) => {
     const payload = c.get('jwtPayload')
     const userId = payload.sub as string
     const cipherId = c.req.param('id')
@@ -199,13 +267,13 @@ ciphers.put('/api/ciphers/:id/delete', async (c) => {
     await putCipher(c.env.VAULT, userId, cipher)
 
     return c.json(cipher)
-})
+}
 
 // --------------------------------------------------------------------------
-// Restore (from trash)
+// Restore Handler (from trash)
 // --------------------------------------------------------------------------
 
-ciphers.put('/api/ciphers/:id/restore', async (c) => {
+export const handleRestore = async (c: AppContext) => {
     const payload = c.get('jwtPayload')
     const userId = payload.sub as string
     const cipherId = c.req.param('id')
@@ -221,6 +289,4 @@ ciphers.put('/api/ciphers/:id/restore', async (c) => {
     await putCipher(c.env.VAULT, userId, cipher)
 
     return c.json(cipher)
-})
-
-export default ciphers
+}

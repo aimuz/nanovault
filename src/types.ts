@@ -5,6 +5,44 @@ export interface Bindings {
   DB: KVNamespace
   VAULT: R2Bucket
   JWT_SECRET: string
+  // Push notification config (optional)
+  PUSH_ENABLED?: string
+  PUSH_INSTALLATION_ID?: string
+  PUSH_INSTALLATION_KEY?: string
+  PUSH_RELAY_URI?: string
+  PUSH_IDENTITY_URI?: string
+}
+
+// Bitwarden device types
+export const DEVICE_TYPE_ANDROID = 0
+export const DEVICE_TYPE_IOS = 1
+export const DEVICE_TYPE_CHROME_EXTENSION = 2
+export const DEVICE_TYPE_FIREFOX_EXTENSION = 3
+export const DEVICE_TYPE_OPERA_EXTENSION = 4
+export const DEVICE_TYPE_EDGE_EXTENSION = 5
+export const DEVICE_TYPE_WINDOWS = 6
+export const DEVICE_TYPE_MACOS = 7
+export const DEVICE_TYPE_LINUX = 8
+export const DEVICE_TYPE_CHROME_BROWSER = 9
+export const DEVICE_TYPE_FIREFOX_BROWSER = 10
+export const DEVICE_TYPE_OPERA_BROWSER = 11
+export const DEVICE_TYPE_EDGE_BROWSER = 12
+export const DEVICE_TYPE_IE_BROWSER = 13
+export const DEVICE_TYPE_ANDROID_AMAZON = 16
+export const DEVICE_TYPE_CLI = 14
+export const DEVICE_TYPE_SAFARI_BROWSER = 15
+
+// Device data (stored in KV)
+export interface Device {
+  id: string
+  userId: string
+  name: string
+  type: number
+  identifier: string  // Unique device identifier from client
+  pushToken?: string  // FCM/APNS token
+  pushUuid?: string   // UUID from Bitwarden push service registration
+  createdAt: string
+  updatedAt: string
 }
 
 // Bitwarden KDF types
@@ -27,30 +65,18 @@ export interface PreloginResponse {
   kdfParallelism?: number
 }
 
-export interface RegisterRequest {
-  name?: string
-  email?: string
-  masterPasswordHash?: string
+export interface FinishRegisterRequest {
+  email: string
+  masterPasswordHash: string
   masterPasswordHint?: string
-  key?: string
+  userSymmetricKey: string
   kdf?: number
   kdfIterations?: number
-  keys?: {
+  userAsymmetricKeys?: {
     publicKey: string
     encryptedPrivateKey: string
   }
-  // PascalCase variants for input compatibility
-  Name?: string
-  Email?: string
-  MasterPasswordHash?: string
-  MasterPasswordHint?: string
-  Key?: string
-  Kdf?: number
-  KdfIterations?: number
-  Keys?: {
-    PublicKey: string
-    EncryptedPrivateKey: string
-  }
+  emailVerificationToken: string
 }
 
 // --------------------------------------------------------------------------
@@ -72,6 +98,7 @@ export interface UserData {
   encryptedPrivateKey?: string
   securityStamp: string
   culture: string
+  emailVerified?: boolean  // True if registered via email verification flow
   createdAt: string
   updatedAt: string
   // Domain settings
@@ -247,6 +274,17 @@ export interface GlobalEquivalentDomain {
   type: number
   domains: string[]
   excluded: boolean
+}
+
+
+/** Bitwarden-style error response */
+export const errorResponse = (c: AppContext, message: string, statusCode: 400 | 401 | 403 | 404 | 500 = 400) => {
+  return c.json({
+    message: message,
+    validationErrors: { '': [message] },
+    errorModel: { message: message, validationErrors: { '': [message] } },
+    object: 'error'
+  }, statusCode)
 }
 
 // --------------------------------------------------------------------------

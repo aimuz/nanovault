@@ -69,6 +69,46 @@ const createTestEnv = () => ({
     JWT_SECRET: 'integration-test-secret-key-32chars!'
 })
 
+// Helper: Register a user via the new two-step flow
+// This simulates: 1) send-verification-email 2) register/finish
+const registerUser = async (
+    env: ReturnType<typeof createTestEnv>,
+    userData: {
+        email: string
+        masterPasswordHash: string
+        key: string
+        kdf?: number
+        kdfIterations?: number
+        name?: string
+    }
+) => {
+    const { sign } = await import('hono/jwt')
+
+    // Generate registration token (simulating what send-verification-email does)
+    const registrationToken = await sign({
+        email: userData.email.toLowerCase(),
+        name: userData.name || '',
+        type: 'registration',
+        exp: Math.floor(Date.now() / 1000) + 24 * 3600
+    }, env.JWT_SECRET)
+
+    // Call the new register/finish endpoint
+    const res = await app.request('/identity/accounts/register/finish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            email: userData.email.toLowerCase(),
+            masterPasswordHash: userData.masterPasswordHash,
+            userSymmetricKey: userData.key,
+            kdf: userData.kdf ?? 0,
+            kdfIterations: userData.kdfIterations ?? 600000,
+            emailVerificationToken: registrationToken
+        })
+    }, env)
+
+    return res
+}
+
 // =============================================================================
 // Auth Flow Integration Tests
 // =============================================================================
@@ -145,18 +185,14 @@ describe('Integration: Auth Flow', () => {
     })
 
     describe('Register', () => {
-        it('creates user with camelCase request fields', async () => {
-            const res = await app.request('/api/accounts/register', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    email: 'newuser@example.com',
-                    masterPasswordHash: 'hash123abc',
-                    key: 'encryptedMasterKey123',
-                    kdf: 0,
-                    kdfIterations: 100000
-                })
-            }, env)
+        it('creates user with new registration flow', async () => {
+            const res = await registerUser(env, {
+                email: 'newuser@example.com',
+                masterPasswordHash: 'hash123abc',
+                key: 'encryptedMasterKey123',
+                kdf: 0,
+                kdfIterations: 600000
+            })
 
             expect(res.status).toBe(200)
             const data = await res.json() as any
@@ -166,348 +202,332 @@ describe('Integration: Auth Flow', () => {
             expect(typeof data.id).toBe('string')
         })
 
-        it('creates user with PascalCase request fields (client compat)', async () => {
-            const res = await app.request('/api/accounts/register', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    Email: 'pascal@example.com',
-                    MasterPasswordHash: 'hash123',
-                    Key: 'encryptedKey',
-                    Kdf: 1,
-                    KdfIterations: 600000,
-                    Keys: {
-                        PublicKey: 'publicKey123',
-                        EncryptedPrivateKey: 'privateKey123'
-                    }
-                })
-            }, env)
+        it('creates user with Argon2 KDF settings', async () => {
+            const res = await registerUser(env, {
+                email: 'argon2@example.com',
+                masterPasswordHash: 'hash123',
+                key: 'encryptedKey',
+                kdf: 1,
+                kdfIterations: 600000
+            })
 
             expect(res.status).toBe(200)
         })
 
         it('rejects duplicate email registration', async () => {
             // First registration
-            await app.request('/api/accounts/register', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    email: 'dup@example.com',
-                    masterPasswordHash: 'hash1',
-                    key: 'key1'
-                })
-            }, env)
+            await registerUser(env, {
+                email: 'dup@example.com',
+                masterPasswordHash: 'hash1',
+                key: 'key1'
+            })
 
             // Second registration with same email
-            const res = await app.request('/api/accounts/register', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    email: 'dup@example.com',
-                    masterPasswordHash: 'hash2',
-                    key: 'key2'
-                })
-            }, env)
+            const res = await registerUser(env, {
+                email: 'dup@example.com',
+                masterPasswordHash: 'hash2',
+                key: 'key2'
+            })
 
             expect(res.status).toBe(400)
             const data = await res.json() as any
             expect(data.message).toMatch(/exists/i)
         })
 
-        const missingFieldCases = [
-            { name: 'missing email', body: { masterPasswordHash: 'h', key: 'k' } },
-            { name: 'missing masterPasswordHash', body: { email: 'e@e.com', key: 'k' } },
-            { name: 'missing key', body: { email: 'e@e.com', masterPasswordHash: 'h' } }
-        ]
+        it('requires email verification token', async () => {
+            // Try to register directly without token
+            const res = await app.request('/identity/accounts/register/finish', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    email: 'test@example.com',
+                    masterPasswordHash: 'hash',
+                    userSymmetricKey: 'key'
+                })
+            }, env)
 
-        missingFieldCases.forEach(({ name, body }) => {
-            it(`rejects ${name}`, async () => {
-                const res = await app.request('/api/accounts/register', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(body)
-                }, env)
+            expect(res.status).toBe(400)
+            const data = await res.json() as any
+            expect(data.message).toMatch(/token/i)
+        })
+    })
+})
 
-                expect(res.status).toBe(400)
+describe('Token (Login)', () => {
+    let env: ReturnType<typeof createTestEnv>
+
+    beforeEach(async () => {
+        env = createTestEnv()
+        // Pre-register a test user using new flow
+        await registerUser(env, {
+            email: 'login@example.com',
+            masterPasswordHash: 'correctHash123',
+            key: 'userEncryptionKey123',
+            kdf: 0,
+            kdfIterations: 100000
+        })
+    })
+
+    it('returns OAuth2-compliant token response for valid credentials', async () => {
+        const res = await app.request('/identity/connect/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+                grant_type: 'password',
+                username: 'login@example.com',
+                password: 'correctHash123'
+            }).toString()
+        }, env)
+
+        expect(res.status).toBe(200)
+        const data = await res.json() as any
+
+        // OAuth2 required fields
+        expect(data.access_token).toBeDefined()
+        expect(data.refresh_token).toBeDefined()
+        expect(data.token_type).toBe('Bearer')
+        expect(data.expires_in).toBeDefined()
+
+        // Bitwarden-specific fields
+        expect(data.key).toBe('userEncryptionKey123')
+        expect(data.kdf).toBe(0)
+        expect(data.kdfIterations).toBe(100000)
+        expect(data.userDecryptionOptions).toBeDefined()
+        expect(data.userDecryptionOptions.hasMasterPassword).toBe(true)
+    })
+
+    it('returns error for invalid password', async () => {
+        const res = await app.request('/identity/connect/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+                grant_type: 'password',
+                username: 'login@example.com',
+                password: 'wrongPassword'
+            }).toString()
+        }, env)
+
+        expect(res.status).toBe(400)
+        const data = await res.json() as any
+        expect(data.error).toBe('invalid_grant')
+    })
+
+    it('returns error for non-existent user', async () => {
+        const res = await app.request('/identity/connect/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+                grant_type: 'password',
+                username: 'nobody@example.com',
+                password: 'anypass'
+            }).toString()
+        }, env)
+
+        expect(res.status).toBe(400)
+        const data = await res.json() as any
+        expect(data.error).toBe('invalid_grant')
+    })
+
+    it('rejects unsupported grant_type', async () => {
+        const res = await app.request('/identity/connect/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+                grant_type: 'client_credentials'
+            }).toString()
+        }, env)
+
+        expect(res.status).toBe(400)
+        const data = await res.json() as any
+        expect(data.error).toBe('unsupported_grant_type')
+    })
+})
+
+describe('Token Refresh', () => {
+    let refreshToken: string
+    let env: ReturnType<typeof createTestEnv>
+
+    beforeEach(() => {
+        env = createTestEnv()
+    })
+
+    beforeEach(async () => {
+        // Register and login to get tokens
+        await registerUser(env, {
+            email: 'refresh@example.com',
+            masterPasswordHash: 'hash123',
+            key: 'key123'
+        })
+
+        const loginRes = await app.request('/identity/connect/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+                grant_type: 'password',
+                username: 'refresh@example.com',
+                password: 'hash123'
+            }).toString()
+        }, env)
+
+        const loginData = await loginRes.json() as any
+        refreshToken = loginData.refresh_token
+    })
+
+    it('issues new access_token with valid refresh_token', async () => {
+        const res = await app.request('/identity/connect/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+                grant_type: 'refresh_token',
+                refresh_token: refreshToken
+            }).toString()
+        }, env)
+
+        expect(res.status).toBe(200)
+        const data = await res.json() as any
+        expect(data.access_token).toBeDefined()
+        expect(data.refresh_token).toBeDefined()
+        expect(data.token_type).toBe('Bearer')
+    })
+
+    it('rejects invalid refresh_token', async () => {
+        const res = await app.request('/identity/connect/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+                grant_type: 'refresh_token',
+                refresh_token: 'invalid-token-here'
+            }).toString()
+        }, env)
+
+        expect(res.status).toBe(400)
+        const data = await res.json() as any
+        expect(data.error).toBe('invalid_grant')
+    })
+})
+
+describe('Password Change Token Invalidation', () => {
+    let env: ReturnType<typeof createTestEnv>
+    beforeEach(() => {
+        env = createTestEnv()
+    })
+
+    let accessToken: string
+    let refreshToken: string
+
+    beforeEach(async () => {
+        // Register a user using new flow
+        await registerUser(env, {
+            email: 'pwchange@example.com',
+            masterPasswordHash: 'oldHash123',
+            key: 'oldKey123'
+        })
+
+        // Login to get tokens
+        const loginRes = await app.request('/identity/connect/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+                grant_type: 'password',
+                username: 'pwchange@example.com',
+                password: 'oldHash123'
+            }).toString()
+        }, env)
+
+        const loginData = await loginRes.json() as any
+        accessToken = loginData.access_token
+        refreshToken = loginData.refresh_token
+    })
+
+    it('invalidates access token after password change', async () => {
+        // Change password
+        const changeRes = await app.request('/api/accounts/password', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                masterPasswordHash: 'oldHash123',
+                newMasterPasswordHash: 'newHash456',
+                key: 'newKey456'
             })
-        })
+        }, env)
+        expect(changeRes.status).toBe(200)
+
+        // Old access token should now be rejected
+        const syncRes = await app.request('/api/sync', {
+            method: 'GET',
+            headers: { 'Authorization': `Bearer ${accessToken}` }
+        }, env)
+
+        expect(syncRes.status).toBe(401)
+        const data = await syncRes.json() as any
+        expect(data.error_description).toContain('revoked')
     })
 
-    describe('Token (Login)', () => {
-        beforeEach(async () => {
-            // Pre-register a test user
-            await app.request('/api/accounts/register', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    email: 'login@example.com',
-                    masterPasswordHash: 'correctHash123',
-                    key: 'userEncryptionKey123',
-                    kdf: 0,
-                    kdfIterations: 100000
-                })
-            }, env)
-        })
+    it('invalidates refresh token after password change', async () => {
+        // Change password
+        const changeRes = await app.request('/api/accounts/password', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                masterPasswordHash: 'oldHash123',
+                newMasterPasswordHash: 'newHash456',
+                key: 'newKey456'
+            })
+        }, env)
+        expect(changeRes.status).toBe(200)
 
-        it('returns OAuth2-compliant token response for valid credentials', async () => {
-            const res = await app.request('/identity/connect/token', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: new URLSearchParams({
-                    grant_type: 'password',
-                    username: 'login@example.com',
-                    password: 'correctHash123'
-                }).toString()
-            }, env)
+        // Old refresh token should now be rejected
+        const refreshRes = await app.request('/identity/connect/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+                grant_type: 'refresh_token',
+                refresh_token: refreshToken
+            }).toString()
+        }, env)
 
-            expect(res.status).toBe(200)
-            const data = await res.json() as any
-
-            // OAuth2 required fields
-            expect(data.access_token).toBeDefined()
-            expect(data.refresh_token).toBeDefined()
-            expect(data.token_type).toBe('Bearer')
-            expect(data.expires_in).toBeDefined()
-
-            // Bitwarden-specific fields
-            expect(data.key).toBe('userEncryptionKey123')
-            expect(data.kdf).toBe(0)
-            expect(data.kdfIterations).toBe(100000)
-            expect(data.userDecryptionOptions).toBeDefined()
-            expect(data.userDecryptionOptions.hasMasterPassword).toBe(true)
-        })
-
-        it('returns error for invalid password', async () => {
-            const res = await app.request('/identity/connect/token', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: new URLSearchParams({
-                    grant_type: 'password',
-                    username: 'login@example.com',
-                    password: 'wrongPassword'
-                }).toString()
-            }, env)
-
-            expect(res.status).toBe(400)
-            const data = await res.json() as any
-            expect(data.error).toBe('invalid_grant')
-        })
-
-        it('returns error for non-existent user', async () => {
-            const res = await app.request('/identity/connect/token', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: new URLSearchParams({
-                    grant_type: 'password',
-                    username: 'nobody@example.com',
-                    password: 'anypass'
-                }).toString()
-            }, env)
-
-            expect(res.status).toBe(400)
-            const data = await res.json() as any
-            expect(data.error).toBe('invalid_grant')
-        })
-
-        it('rejects unsupported grant_type', async () => {
-            const res = await app.request('/identity/connect/token', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: new URLSearchParams({
-                    grant_type: 'client_credentials'
-                }).toString()
-            }, env)
-
-            expect(res.status).toBe(400)
-            const data = await res.json() as any
-            expect(data.error).toBe('unsupported_grant_type')
-        })
+        expect(refreshRes.status).toBe(400)
+        const data = await refreshRes.json() as any
+        expect(data.error).toBe('invalid_grant')
+        expect(data.error_description).toContain('revoked')
     })
 
-    describe('Token Refresh', () => {
-        let refreshToken: string
+    it('allows login with new password after change', async () => {
+        // Change password
+        await app.request('/api/accounts/password', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                masterPasswordHash: 'oldHash123',
+                newMasterPasswordHash: 'newHash456',
+                key: 'newKey456'
+            })
+        }, env)
 
-        beforeEach(async () => {
-            // Register and login to get tokens
-            await app.request('/api/accounts/register', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    email: 'refresh@example.com',
-                    masterPasswordHash: 'hash123',
-                    key: 'key123'
-                })
-            }, env)
+        // Login with new password should work
+        const loginRes = await app.request('/identity/connect/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+                grant_type: 'password',
+                username: 'pwchange@example.com',
+                password: 'newHash456'
+            }).toString()
+        }, env)
 
-            const loginRes = await app.request('/identity/connect/token', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: new URLSearchParams({
-                    grant_type: 'password',
-                    username: 'refresh@example.com',
-                    password: 'hash123'
-                }).toString()
-            }, env)
-
-            const loginData = await loginRes.json() as any
-            refreshToken = loginData.refresh_token
-        })
-
-        it('issues new access_token with valid refresh_token', async () => {
-            const res = await app.request('/identity/connect/token', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: new URLSearchParams({
-                    grant_type: 'refresh_token',
-                    refresh_token: refreshToken
-                }).toString()
-            }, env)
-
-            expect(res.status).toBe(200)
-            const data = await res.json() as any
-            expect(data.access_token).toBeDefined()
-            expect(data.refresh_token).toBeDefined()
-            expect(data.token_type).toBe('Bearer')
-        })
-
-        it('rejects invalid refresh_token', async () => {
-            const res = await app.request('/identity/connect/token', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: new URLSearchParams({
-                    grant_type: 'refresh_token',
-                    refresh_token: 'invalid-token-here'
-                }).toString()
-            }, env)
-
-            expect(res.status).toBe(400)
-            const data = await res.json() as any
-            expect(data.error).toBe('invalid_grant')
-        })
-    })
-
-    describe('Password Change Token Invalidation', () => {
-        let accessToken: string
-        let refreshToken: string
-
-        beforeEach(async () => {
-            // Register a user
-            await app.request('/api/accounts/register', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    email: 'pwchange@example.com',
-                    masterPasswordHash: 'oldHash123',
-                    key: 'oldKey123'
-                })
-            }, env)
-
-            // Login to get tokens
-            const loginRes = await app.request('/identity/connect/token', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: new URLSearchParams({
-                    grant_type: 'password',
-                    username: 'pwchange@example.com',
-                    password: 'oldHash123'
-                }).toString()
-            }, env)
-
-            const loginData = await loginRes.json() as any
-            accessToken = loginData.access_token
-            refreshToken = loginData.refresh_token
-        })
-
-        it('invalidates access token after password change', async () => {
-            // Change password
-            const changeRes = await app.request('/api/accounts/password', {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${accessToken}`,
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    masterPasswordHash: 'oldHash123',
-                    newMasterPasswordHash: 'newHash456',
-                    key: 'newKey456'
-                })
-            }, env)
-            expect(changeRes.status).toBe(200)
-
-            // Old access token should now be rejected
-            const syncRes = await app.request('/api/sync', {
-                method: 'GET',
-                headers: { 'Authorization': `Bearer ${accessToken}` }
-            }, env)
-
-            expect(syncRes.status).toBe(401)
-            const data = await syncRes.json() as any
-            expect(data.error_description).toContain('revoked')
-        })
-
-        it('invalidates refresh token after password change', async () => {
-            // Change password
-            const changeRes = await app.request('/api/accounts/password', {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${accessToken}`,
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    masterPasswordHash: 'oldHash123',
-                    newMasterPasswordHash: 'newHash456',
-                    key: 'newKey456'
-                })
-            }, env)
-            expect(changeRes.status).toBe(200)
-
-            // Old refresh token should now be rejected
-            const refreshRes = await app.request('/identity/connect/token', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: new URLSearchParams({
-                    grant_type: 'refresh_token',
-                    refresh_token: refreshToken
-                }).toString()
-            }, env)
-
-            expect(refreshRes.status).toBe(400)
-            const data = await refreshRes.json() as any
-            expect(data.error).toBe('invalid_grant')
-            expect(data.error_description).toContain('revoked')
-        })
-
-        it('allows login with new password after change', async () => {
-            // Change password
-            await app.request('/api/accounts/password', {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${accessToken}`,
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    masterPasswordHash: 'oldHash123',
-                    newMasterPasswordHash: 'newHash456',
-                    key: 'newKey456'
-                })
-            }, env)
-
-            // Login with new password should work
-            const loginRes = await app.request('/identity/connect/token', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: new URLSearchParams({
-                    grant_type: 'password',
-                    username: 'pwchange@example.com',
-                    password: 'newHash456'
-                }).toString()
-            }, env)
-
-            expect(loginRes.status).toBe(200)
-            const data = await loginRes.json() as any
-            expect(data.access_token).toBeDefined()
-            expect(data.key).toBe('newKey456')
-        })
+        expect(loginRes.status).toBe(200)
+        const data = await loginRes.json() as any
+        expect(data.access_token).toBeDefined()
+        expect(data.key).toBe('newKey456')
     })
 })
 
@@ -524,15 +544,11 @@ describe('Integration: Vault Operations', () => {
         env = createTestEnv()
 
         // Register and login
-        const regRes = await app.request('/api/accounts/register', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                email: 'vault@example.com',
-                masterPasswordHash: 'vaultHash',
-                key: 'vaultKey'
-            })
-        }, env)
+        const regRes = await registerUser(env, {
+            email: 'vault@example.com',
+            masterPasswordHash: 'vaultHash',
+            key: 'vaultKey'
+        })
         const regData = await regRes.json() as any
         userId = regData.id
 
@@ -986,16 +1002,12 @@ describe('Integration: Sync', () => {
         env = createTestEnv()
 
         // Register and login
-        await app.request('/api/accounts/register', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                email: 'sync@example.com',
-                masterPasswordHash: 'syncHash',
-                key: 'syncKey',
-                name: 'Sync User'
-            })
-        }, env)
+        await registerUser(env, {
+            email: 'sync@example.com',
+            masterPasswordHash: 'syncHash',
+            key: 'syncKey',
+            name: 'Sync User'
+        })
 
         const loginRes = await app.request('/identity/connect/token', {
             method: 'POST',
@@ -1220,15 +1232,11 @@ describe('Integration: Config & Stubs', () => {
 
         beforeEach(async () => {
             // Register and login for protected endpoints
-            await app.request('/api/accounts/register', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    email: 'domains@example.com',
-                    masterPasswordHash: 'domainsHash',
-                    key: 'domainsKey'
-                })
-            }, env)
+            await registerUser(env, {
+                email: 'domains@example.com',
+                masterPasswordHash: 'domainsHash',
+                key: 'domainsKey'
+            })
 
             const loginRes = await app.request('/identity/connect/token', {
                 method: 'POST',

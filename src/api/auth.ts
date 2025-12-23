@@ -1,18 +1,17 @@
 /**
- * Authentication API Module
+ * Authentication Handlers Module
  * 
- * Handles: Prelogin, Register, Token (password/refresh)
+ * Exports handler functions for: Prelogin, Register, Token, Email/Password change
  */
 
-import { Hono, Context } from 'hono'
+import { Context } from 'hono'
 import { sign, verify } from 'hono/jwt'
-import type { Bindings, PreloginRequest, PreloginResponse, RegisterRequest, UserData } from '../types'
-import { getUser, putUser } from '../storage/kv'
-import { getSecret, createJwtMiddleware } from '../utils/auth'
+import type { Bindings, PreloginRequest, PreloginResponse, UserData, FinishRegisterRequest, Device } from '../types'
+import { getUser, putUser, getDevice, putDevice } from '../storage/kv'
+import { getSecret } from '../utils/auth'
+import { isPushEnabled, registerDevice } from './push'
 
 type AppContext = Context<{ Bindings: Bindings }>
-
-const auth = new Hono<{ Bindings: Bindings }>()
 
 // --------------------------------------------------------------------------
 // Constants
@@ -33,6 +32,18 @@ export const errorResponse = (c: AppContext, message: string, statusCode: 400 | 
         errorModel: { message: message, validationErrors: { '': [message] } },
         object: 'error'
     }, statusCode)
+}
+
+/** 
+ * Server-side hash of masterPasswordHash for storage.
+ * Uses securityStamp as salt to prevent rainbow table attacks.
+ */
+async function hashPassword(masterPasswordHash: string, salt: string): Promise<string> {
+    const encoder = new TextEncoder()
+    const data = encoder.encode(salt + masterPasswordHash)
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data)
+    const hashArray = Array.from(new Uint8Array(hashBuffer))
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
 }
 
 /** Build OAuth2 token response */
@@ -59,23 +70,25 @@ function buildTokenResponse(
     }
 }
 
-/** Build JWT payload for a user */
-function buildJwtPayload(user: UserData, ttl: number) {
+type TokenType = 'access' | 'refresh'
+
+function buildJwtPayload(user: UserData, ttl: number, tokenType: TokenType) {
     return {
         sub: user.id,
         email: user.email,
         name: user.name,
         email_verified: true,
         stamp: user.securityStamp,
+        token_type: tokenType,
         exp: Math.floor(Date.now() / 1000) + ttl
     }
 }
 
 // --------------------------------------------------------------------------
-// Prelogin
+// Prelogin Handler
 // --------------------------------------------------------------------------
 
-const handlePrelogin = async (c: AppContext) => {
+export const handlePrelogin = async (c: AppContext) => {
     try {
         const body: PreloginRequest = await c.req.json()
         const emailIn = body.Email || body.email
@@ -105,75 +118,245 @@ const handlePrelogin = async (c: AppContext) => {
     }
 }
 
-auth.post('/api/accounts/prelogin', handlePrelogin)
-auth.post('/identity/accounts/prelogin', handlePrelogin)
-
 // --------------------------------------------------------------------------
-// Register
+// Legacy Register Handler
 // --------------------------------------------------------------------------
 
-const handleRegister = async (c: AppContext) => {
-    const body: RegisterRequest = await c.req.json()
-    const emailRaw = body.Email || body.email
-    const masterHash = body.MasterPasswordHash || body.masterPasswordHash
-    const key = body.Key || body.key
-    const kdf = body.Kdf ?? body.kdf ?? 0
-    const iterations = body.KdfIterations ?? body.kdfIterations ?? 100000
-    const name = body.Name || body.name
+export const legacyRegisterHandler = (c: AppContext) => {
+    return errorResponse(c, 'Registration via this endpoint is disabled. Please use the email verification flow: 1) POST /identity/accounts/register/send-verification-email 2) POST /identity/accounts/register/finish')
+}
 
-    // RSA Keys extraction
-    let pubKey: string | undefined
-    let privKey: string | undefined
-    if (body.keys) {
-        pubKey = body.keys.publicKey
-        privKey = body.keys.encryptedPrivateKey
+// --------------------------------------------------------------------------
+// Register Finish Handler
+// --------------------------------------------------------------------------
+
+export const handleRegisterFinish = async (c: AppContext) => {
+    const body = await c.req.json<FinishRegisterRequest>()
+
+    const email = body.email?.toLowerCase()
+    const masterHash = body.masterPasswordHash
+    const key = body.userSymmetricKey
+    const kdf = body.kdf ?? 0
+    const iterations = body.kdfIterations ?? 600000
+    const hint = body.masterPasswordHint
+    const emailToken = body.emailVerificationToken
+
+    const pubKey = body.userAsymmetricKeys?.publicKey
+    const privKey = body.userAsymmetricKeys?.encryptedPrivateKey
+
+    if (!email || !masterHash || !key) {
+        return errorResponse(c, 'Missing required fields (email, masterPasswordHash, userSymmetricKey)')
     }
 
-    if (!emailRaw || !masterHash || !key) {
-        return errorResponse(c, 'Missing required fields (email, hash, key)')
+    if (!emailToken) {
+        return errorResponse(c, 'Email verification token required')
     }
-    const email = emailRaw.toLowerCase()
+
+    let tokenName: string | undefined
+    try {
+        const secret = getSecret(c.env)
+        const payload = await verify(emailToken, secret)
+
+        if (payload.type !== 'registration') {
+            return errorResponse(c, 'Invalid verification token type')
+        }
+        if ((payload.email as string).toLowerCase() !== email) {
+            return errorResponse(c, 'Token email mismatch')
+        }
+        tokenName = payload.name as string | undefined
+    } catch {
+        return errorResponse(c, 'Invalid or expired verification token')
+    }
 
     const existing = await getUser(c.env.DB, email)
     if (existing) {
         return errorResponse(c, 'User already exists')
     }
 
+    const securityStamp = crypto.randomUUID()
+    const serverHash = await hashPassword(masterHash, securityStamp)
+
     const now = new Date().toISOString()
     const newUser: UserData = {
         id: crypto.randomUUID(),
         email: email,
-        masterPasswordHash: masterHash,
-        masterPasswordHint: body.MasterPasswordHint || body.masterPasswordHint,
+        masterPasswordHash: serverHash,
+        masterPasswordHint: hint,
         key: key,
         kdf: kdf,
         kdfIterations: iterations,
-        name: name,
+        name: tokenName || "",
         publicKey: pubKey,
         encryptedPrivateKey: privKey,
-        securityStamp: crypto.randomUUID(),
+        securityStamp: securityStamp,
         culture: 'en-US',
+        emailVerified: true,
         createdAt: now,
         updatedAt: now
     }
 
     await putUser(c.env.DB, newUser)
 
-    console.log(`Registered user: ${newUser.id}, KDF: ${newUser.kdf}`)
+    console.log(`Registered user (finish): ${newUser.id}, KDF: ${newUser.kdf}, verified: ${newUser.emailVerified}`)
     return c.json({ id: newUser.id }, 200)
 }
 
-auth.post('/api/accounts/register', handleRegister)
-auth.post('/identity/accounts/register', handleRegister)
-
-// Email verification stub
-auth.post('/identity/accounts/register/send-verification-email', (c) => c.json({ success: true }, 200))
-
 // --------------------------------------------------------------------------
-// Password Change (Protected)
+// Send Verification Email Handler
 // --------------------------------------------------------------------------
 
-auth.post('/api/accounts/password', createJwtMiddleware, async (c) => {
+export const handleSendVerificationEmail = async (c: AppContext) => {
+    const body = await c.req.json<any>()
+    const email = (body.Email || body.email || '').toLowerCase()
+    const baseUrl = new URL(c.req.url).origin
+
+    if (!email) {
+        return c.json({ success: true }, 200)
+    }
+
+    const existing = await getUser(c.env.DB, email)
+    if (existing) {
+        console.log(`[NanoVault] Registration attempt for existing email: ${email}`)
+        return c.json({ success: true }, 200)
+    }
+
+    const secret = getSecret(c.env)
+    const name = body.Name || body.name || ''
+
+    const registrationToken = await sign({
+        email: email,
+        name: name,
+        type: 'registration',
+        exp: Math.floor(Date.now() / 1000) + 24 * 3600
+    }, secret)
+
+    const registerUrl = `${baseUrl}/#/finish-signup/?email=${encodeURIComponent(email)}&token=${encodeURIComponent(registrationToken)}`
+    console.log(`[NanoVault] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`)
+    console.log(`[NanoVault] Registration request for: ${email}`)
+    console.log(`[NanoVault] Complete registration at:`)
+    console.log(`[NanoVault] ${registerUrl}`)
+    console.log(`[NanoVault] Token valid for 24 hours`)
+    console.log(`[NanoVault] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`)
+
+    return c.json({ success: true }, 200)
+}
+
+// --------------------------------------------------------------------------
+// Email Token Handler (request email change)
+// --------------------------------------------------------------------------
+
+export const handleEmailToken = async (c: AppContext) => {
+    const payload = c.get('jwtPayload')
+    const body = await c.req.json<any>()
+
+    const newEmail = (body.newEmail || '').toLowerCase()
+    const passwordHash = body.masterPasswordHash
+
+    if (!newEmail || !passwordHash) {
+        return errorResponse(c, 'Missing newEmail or masterPasswordHash')
+    }
+
+    const user = await getUser(c.env.DB, payload.email)
+    if (!user) {
+        return errorResponse(c, 'User not found', 404)
+    }
+
+    const incomingHash = await hashPassword(passwordHash, user.securityStamp)
+    if (user.masterPasswordHash !== incomingHash) {
+        return errorResponse(c, 'Invalid password')
+    }
+
+    const existing = await getUser(c.env.DB, newEmail)
+    if (existing) {
+        return errorResponse(c, 'Email already in use')
+    }
+
+    const secret = getSecret(c.env)
+    const emailChangeToken = await sign({
+        userId: user.id,
+        oldEmail: user.email,
+        newEmail: newEmail,
+        type: 'email_change',
+        exp: Math.floor(Date.now() / 1000) + 24 * 3600
+    }, secret)
+
+    const baseUrl = new URL(c.req.url).origin
+    console.log(`[NanoVault] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`)
+    console.log(`[NanoVault] Email change request for: ${user.email} -> ${newEmail}`)
+    console.log(`[NanoVault] Token: ${emailChangeToken}`)
+    console.log(`[NanoVault] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`)
+
+    return c.json({}, 200)
+}
+
+// --------------------------------------------------------------------------
+// Email Change Handler (complete email change)
+// --------------------------------------------------------------------------
+
+export const handleEmailChange = async (c: AppContext) => {
+    const payload = c.get('jwtPayload')
+    const body = await c.req.json<any>()
+
+    const token = body.token
+    const newEmail = (body.newEmail || '').toLowerCase()
+    const masterPasswordHash = body.masterPasswordHash
+    const newMasterPasswordHash = body.newMasterPasswordHash
+    const newKey = body.key
+
+    if (!token || !newEmail || !masterPasswordHash || !newMasterPasswordHash || !newKey) {
+        return errorResponse(c, 'Missing required fields')
+    }
+
+    const secret = getSecret(c.env)
+    let tokenPayload
+    try {
+        tokenPayload = await verify(token, secret)
+        if (tokenPayload.type !== 'email_change') {
+            return errorResponse(c, 'Invalid token type')
+        }
+    } catch {
+        return errorResponse(c, 'Invalid or expired token')
+    }
+
+    const user = await getUser(c.env.DB, payload.email)
+    if (!user || user.id !== tokenPayload.userId) {
+        return errorResponse(c, 'User mismatch', 401)
+    }
+
+    const incomingHash = await hashPassword(masterPasswordHash, user.securityStamp)
+    if (user.masterPasswordHash !== incomingHash) {
+        return errorResponse(c, 'Invalid password')
+    }
+
+    const existing = await getUser(c.env.DB, newEmail)
+    if (existing) {
+        return errorResponse(c, 'Email already in use')
+    }
+
+    const newSecurityStamp = crypto.randomUUID()
+    const newServerHash = await hashPassword(newMasterPasswordHash, newSecurityStamp)
+
+    const updatedUser: UserData = {
+        ...user,
+        email: newEmail,
+        masterPasswordHash: newServerHash,
+        key: newKey,
+        securityStamp: newSecurityStamp,
+        updatedAt: new Date().toISOString()
+    }
+
+    await c.env.DB.delete(`user:${user.email}`)
+    await putUser(c.env.DB, updatedUser)
+
+    console.log(`[NanoVault] Email changed: ${user.email} -> ${newEmail}`)
+    return c.json({}, 200)
+}
+
+// --------------------------------------------------------------------------
+// Password Change Handler
+// --------------------------------------------------------------------------
+
+export const handlePasswordChange = async (c: AppContext) => {
     const jwtPayload = c.get('jwtPayload')
     const body = await c.req.json<any>()
 
@@ -182,13 +365,12 @@ auth.post('/api/accounts/password', createJwtMiddleware, async (c) => {
         return errorResponse(c, 'User not found', 404)
     }
 
-    // Verify current password
     const currentHash = body.MasterPasswordHash || body.masterPasswordHash
-    if (user.masterPasswordHash !== currentHash) {
+    const incomingHash = await hashPassword(currentHash, user.securityStamp)
+    if (user.masterPasswordHash !== incomingHash) {
         return errorResponse(c, 'Invalid current password')
     }
 
-    // Update password
     const newHash = body.NewMasterPasswordHash || body.newMasterPasswordHash
     const newKey = body.Key || body.key
 
@@ -196,21 +378,22 @@ auth.post('/api/accounts/password', createJwtMiddleware, async (c) => {
         return errorResponse(c, 'New password hash and key required')
     }
 
-    user.masterPasswordHash = newHash
+    const newSecurityStamp = crypto.randomUUID()
+    user.masterPasswordHash = await hashPassword(newHash, newSecurityStamp)
     user.key = newKey
-    user.securityStamp = crypto.randomUUID()
+    user.securityStamp = newSecurityStamp
     user.updatedAt = new Date().toISOString()
 
     await putUser(c.env.DB, user)
 
     return c.json({})
-})
+}
 
 // --------------------------------------------------------------------------
-// Token (Login / Refresh)
+// Token Handler (login / refresh)
 // --------------------------------------------------------------------------
 
-auth.post('/identity/connect/token', async (c) => {
+export const handleToken = async (c: AppContext) => {
     try {
         const body = await c.req.parseBody()
         const secret = getSecret(c.env)
@@ -221,16 +404,19 @@ auth.post('/identity/connect/token', async (c) => {
             try {
                 const payload = await verify(refreshToken, secret)
 
+                if (payload.token_type !== 'refresh') {
+                    return c.json({ error: 'invalid_grant', error_description: 'Invalid token type' }, 400)
+                }
+
                 const user = await getUser(c.env.DB, payload.email as string)
                 if (!user) throw new Error('User deleted')
 
-                // Verify security stamp - invalidates refresh tokens after password change
                 if (payload.stamp !== user.securityStamp) {
                     return c.json({ error: 'invalid_grant', error_description: 'Token has been revoked' }, 400)
                 }
 
-                const newAccessToken = await sign(buildJwtPayload(user, ACCESS_TOKEN_TTL), secret)
-                const newRefreshToken = await sign(buildJwtPayload(user, REFRESH_TOKEN_TTL), secret)
+                const newAccessToken = await sign(buildJwtPayload(user, ACCESS_TOKEN_TTL, 'access'), secret)
+                const newRefreshToken = await sign(buildJwtPayload(user, REFRESH_TOKEN_TTL, 'refresh'), secret)
 
                 return c.json(buildTokenResponse(user, newAccessToken, newRefreshToken))
             } catch {
@@ -255,28 +441,58 @@ auth.post('/identity/connect/token', async (c) => {
             return c.json({ error: 'invalid_grant', error_description: 'Invalid username or password' }, 400)
         }
 
-        // URL Encoding Check: ' ' vs '+'
-        let passwordValid = user.masterPasswordHash === password
-        if (!passwordValid && password.includes(' ')) {
-            const fixedPassword = password.replace(/ /g, '+')
-            if (user.masterPasswordHash === fixedPassword) {
-                passwordValid = true
-            }
+        let passwordToCheck = password
+        if (password.includes(' ')) {
+            passwordToCheck = password.replace(/ /g, '+')
         }
 
-        if (!passwordValid) {
+        const incomingServerHash = await hashPassword(passwordToCheck, user.securityStamp)
+        if (user.masterPasswordHash !== incomingServerHash) {
             console.log(`Login failed: hash mismatch`)
             return c.json({ error: 'invalid_grant', error_description: 'Invalid username or password' }, 400)
         }
 
-        const accessToken = await sign(buildJwtPayload(user, ACCESS_TOKEN_TTL), secret)
-        const refreshToken = await sign(buildJwtPayload(user, REFRESH_TOKEN_TTL), secret)
+        const accessToken = await sign(buildJwtPayload(user, ACCESS_TOKEN_TTL, 'access'), secret)
+        const refreshToken = await sign(buildJwtPayload(user, REFRESH_TOKEN_TTL, 'refresh'), secret)
+
+        // Capture device info for push notifications
+        const deviceIdentifier = body['deviceIdentifier'] as string
+        const deviceName = body['deviceName'] as string
+        const deviceType = parseInt(body['deviceType'] as string) || 0
+        const devicePushToken = body['devicePushToken'] as string
+
+        if (deviceIdentifier) {
+            const now = new Date().toISOString()
+            const device: Device = {
+                id: crypto.randomUUID(),
+                userId: user.id,
+                name: deviceName || 'Unknown Device',
+                type: deviceType,
+                identifier: deviceIdentifier,
+                pushToken: devicePushToken,
+                createdAt: now,
+                updatedAt: now
+            }
+
+            const existingDevice = await getDevice(c.env.DB, deviceIdentifier)
+            if (existingDevice) {
+                device.id = existingDevice.id
+                device.createdAt = existingDevice.createdAt
+            }
+
+            if (devicePushToken && isPushEnabled(c.env)) {
+                const pushUuid = await registerDevice(c.env, user.id, device)
+                if (pushUuid) {
+                    device.pushUuid = pushUuid
+                }
+            }
+
+            await putDevice(c.env.DB, device)
+        }
 
         return c.json(buildTokenResponse(user, accessToken, refreshToken))
     } catch (e) {
         console.error('Token Error:', e)
         return c.json({ error: 'invalid_request' }, 400)
     }
-})
-
-export default auth
+}

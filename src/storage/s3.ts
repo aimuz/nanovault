@@ -14,27 +14,27 @@ import type { Cipher, Folder, AttachmentMeta } from '../types'
 // Cipher Operations
 // --------------------------------------------------------------------------
 
-function cipherKey(userId: string, cipherId: string): string {
+const cipherKey = (userId: string, cipherId: string): string => {
     return `vaults/${userId}/ciphers/${cipherId}.json`
 }
 
-export async function getCipher(bucket: R2Bucket, userId: string, cipherId: string): Promise<Cipher | null> {
+export const getCipher = async (bucket: R2Bucket, userId: string, cipherId: string): Promise<Cipher | null> => {
     const obj = await bucket.get(cipherKey(userId, cipherId))
     if (!obj) return null
     return await obj.json() as Cipher
 }
 
-export async function putCipher(bucket: R2Bucket, userId: string, cipher: Cipher): Promise<void> {
+export const putCipher = async (bucket: R2Bucket, userId: string, cipher: Cipher): Promise<void> => {
     await bucket.put(cipherKey(userId, cipher.id), JSON.stringify(cipher), {
         httpMetadata: { contentType: 'application/json' }
     })
 }
 
-export async function deleteCipher(bucket: R2Bucket, userId: string, cipherId: string): Promise<void> {
+export const deleteCipher = async (bucket: R2Bucket, userId: string, cipherId: string): Promise<void> => {
     await bucket.delete(cipherKey(userId, cipherId))
 }
 
-export async function listCiphers(bucket: R2Bucket, userId: string): Promise<Cipher[]> {
+export const listCiphers = async (bucket: R2Bucket, userId: string): Promise<Cipher[]> => {
     const prefix = `vaults/${userId}/ciphers/`
     const listed = await bucket.list({ prefix })
 
@@ -52,27 +52,27 @@ export async function listCiphers(bucket: R2Bucket, userId: string): Promise<Cip
 // Folder Operations
 // --------------------------------------------------------------------------
 
-function folderKey(userId: string, folderId: string): string {
+const folderKey = (userId: string, folderId: string): string => {
     return `vaults/${userId}/folders/${folderId}.json`
 }
 
-export async function getFolder(bucket: R2Bucket, userId: string, folderId: string): Promise<Folder | null> {
+export const getFolder = async (bucket: R2Bucket, userId: string, folderId: string): Promise<Folder | null> => {
     const obj = await bucket.get(folderKey(userId, folderId))
     if (!obj) return null
     return await obj.json() as Folder
 }
 
-export async function putFolder(bucket: R2Bucket, userId: string, folder: Folder): Promise<void> {
+export const putFolder = async (bucket: R2Bucket, userId: string, folder: Folder): Promise<void> => {
     await bucket.put(folderKey(userId, folder.id), JSON.stringify(folder), {
         httpMetadata: { contentType: 'application/json' }
     })
 }
 
-export async function deleteFolder(bucket: R2Bucket, userId: string, folderId: string): Promise<void> {
+export const deleteFolder = async (bucket: R2Bucket, userId: string, folderId: string): Promise<void> => {
     await bucket.delete(folderKey(userId, folderId))
 }
 
-export async function listFolders(bucket: R2Bucket, userId: string): Promise<Folder[]> {
+export const listFolders = async (bucket: R2Bucket, userId: string): Promise<Folder[]> => {
     const prefix = `vaults/${userId}/folders/`
     const listed = await bucket.list({ prefix })
 
@@ -90,34 +90,34 @@ export async function listFolders(bucket: R2Bucket, userId: string): Promise<Fol
 // Attachment Operations
 // --------------------------------------------------------------------------
 
-function attachmentKey(userId: string, cipherId: string, attachmentId: string): string {
+const attachmentKey = (userId: string, cipherId: string, attachmentId: string): string => {
     return `vaults/${userId}/attachments/${cipherId}/${attachmentId}`
 }
 
-export async function getAttachment(bucket: R2Bucket, userId: string, cipherId: string, attachmentId: string): Promise<R2ObjectBody | null> {
+export const getAttachment = async (bucket: R2Bucket, userId: string, cipherId: string, attachmentId: string): Promise<R2ObjectBody | null> => {
     return await bucket.get(attachmentKey(userId, cipherId, attachmentId))
 }
 
-export async function putAttachment(
+export const putAttachment = async (
     bucket: R2Bucket,
     userId: string,
     cipherId: string,
     attachmentId: string,
     data: ArrayBuffer | ReadableStream,
     meta: { contentType?: string; fileName?: string }
-): Promise<void> {
+): Promise<void> => {
     await bucket.put(attachmentKey(userId, cipherId, attachmentId), data, {
         httpMetadata: { contentType: meta.contentType || 'application/octet-stream' },
         customMetadata: { fileName: meta.fileName || '' }
     })
 }
 
-export async function deleteAttachment(bucket: R2Bucket, userId: string, cipherId: string, attachmentId: string): Promise<void> {
+export const deleteAttachment = async (bucket: R2Bucket, userId: string, cipherId: string, attachmentId: string): Promise<void> => {
     await bucket.delete(attachmentKey(userId, cipherId, attachmentId))
 }
 
 // Delete all attachments for a cipher
-export async function deleteAllAttachments(bucket: R2Bucket, userId: string, cipherId: string): Promise<void> {
+export const deleteAllAttachments = async (bucket: R2Bucket, userId: string, cipherId: string): Promise<void> => {
     const prefix = `vaults/${userId}/attachments/${cipherId}/`
     const listed = await bucket.list({ prefix })
 
@@ -127,7 +127,7 @@ export async function deleteAllAttachments(bucket: R2Bucket, userId: string, cip
 }
 
 // Delete entire vault for a user (for account deletion)
-export async function deleteVault(bucket: R2Bucket, userId: string): Promise<void> {
+export const deleteVault = async (bucket: R2Bucket, userId: string): Promise<void> => {
     const prefix = `vaults/${userId}/`
     const listed = await bucket.list({ prefix })
 

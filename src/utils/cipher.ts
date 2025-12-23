@@ -26,7 +26,7 @@ export interface BuildCipherOptions {
  * @param opts - Optional build configuration
  * @returns A normalized Cipher object
  */
-export function buildCipher(body: Record<string, any>, opts: BuildCipherOptions = {}): Cipher {
+export const buildCipher = (body: Record<string, any>, opts: BuildCipherOptions = {}): Cipher => {
     const { existing, id, creationDate } = opts
     const now = new Date().toISOString()
 

@@ -6,10 +6,12 @@ import app from './index'
 // --------------------------------------------------------------------------
 
 // Helper: Create mock user data (camelCase)
+// masterPasswordHash is SHA-256(securityStamp + clientHash)
+// SHA-256('stamp-123' + 'hashedPassword123') = 'fabaf2e0faf57ba77214d5bccf667ae427c7c73b41cc7a6b832453948c6d0ac4'
 const createMockUser = (overrides = {}) => ({
   id: 'user-123',
   email: 'test@example.com',
-  masterPasswordHash: 'hashedPassword123',
+  masterPasswordHash: 'fabaf2e0faf57ba77214d5bccf667ae427c7c73b41cc7a6b832453948c6d0ac4',
   key: 'encryptedKey123',
   kdf: 0,
   kdfIterations: 100000,
@@ -51,7 +53,7 @@ const createMockEnv = () => {
   }
 }
 
-// Helper: Create a valid JWT token for testing
+// Helper: Create a valid JWT token for testing (must be access token type)
 const createTestToken = async () => {
   const { sign } = await import('hono/jwt')
   return sign({
@@ -60,6 +62,7 @@ const createTestToken = async () => {
     name: 'Test User',
     email_verified: true,
     stamp: 'stamp-123',
+    token_type: 'access',
     exp: Math.floor(Date.now() / 1000) + 3600
   }, 'test-secret-key-for-jwt')
 }
@@ -151,20 +154,30 @@ describe('NanoVault API', () => {
   })
 
   // ==========================================================================
-  // Register Tests
+  // Register Tests (new flow with token verification)
   // ==========================================================================
 
   describe('Register', () => {
-    it('creates new user with camelCase fields', async () => {
+    it('creates new user with valid registration token', async () => {
       mockEnv.DB.get.mockResolvedValue(null)
 
-      const res = await app.request('/api/accounts/register', {
+      // First generate a registration token (simulating what the API does)
+      const { sign } = await import('hono/jwt')
+      const token = await sign({
+        email: 'new@example.com',
+        name: '',
+        type: 'registration',
+        exp: Math.floor(Date.now() / 1000) + 3600
+      }, 'test-secret-key-for-jwt')
+
+      const res = await app.request('/identity/accounts/register/finish', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: 'new@example.com',
           masterPasswordHash: 'hash123',
-          key: 'encryptedKey123'
+          userSymmetricKey: 'encryptedKey123',
+          emailVerificationToken: token
         })
       }, mockEnv)
 
@@ -174,18 +187,26 @@ describe('NanoVault API', () => {
       expect(mockEnv.DB.put).toHaveBeenCalled()
     })
 
-    it('creates new user with PascalCase fields', async () => {
+    it('creates new user with Argon2 KDF settings', async () => {
       mockEnv.DB.get.mockResolvedValue(null)
 
-      const res = await app.request('/api/accounts/register', {
+      const { sign } = await import('hono/jwt')
+      const token = await sign({
+        email: 'argon2@example.com',
+        type: 'registration',
+        exp: Math.floor(Date.now() / 1000) + 3600
+      }, 'test-secret-key-for-jwt')
+
+      const res = await app.request('/identity/accounts/register/finish', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          Email: 'pascal@example.com',
-          MasterPasswordHash: 'hash123',
-          Key: 'encryptedKey123',
-          Kdf: 1,
-          KdfIterations: 600000
+          email: 'argon2@example.com',
+          masterPasswordHash: 'hash123',
+          userSymmetricKey: 'encryptedKey123',
+          kdf: 1,
+          kdfIterations: 600000,
+          emailVerificationToken: token
         })
       }, mockEnv)
 
@@ -195,6 +216,48 @@ describe('NanoVault API', () => {
     it('rejects duplicate email', async () => {
       mockEnv.DB.get.mockResolvedValue(JSON.stringify(createMockUser()))
 
+      const { sign } = await import('hono/jwt')
+      const token = await sign({
+        email: 'test@example.com',
+        type: 'registration',
+        exp: Math.floor(Date.now() / 1000) + 3600
+      }, 'test-secret-key-for-jwt')
+
+      const res = await app.request('/identity/accounts/register/finish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'test@example.com',
+          masterPasswordHash: 'hash',
+          userSymmetricKey: 'key',
+          emailVerificationToken: token
+        })
+      }, mockEnv)
+
+      expect(res.status).toBe(400)
+      const data: any = await res.json()
+      expect(data.message).toContain('exists')
+    })
+
+    it('rejects registration without token', async () => {
+      mockEnv.DB.get.mockResolvedValue(null)
+
+      const res = await app.request('/identity/accounts/register/finish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'test@example.com',
+          masterPasswordHash: 'hash',
+          userSymmetricKey: 'key'
+        })
+      }, mockEnv)
+
+      expect(res.status).toBe(400)
+      const data: any = await res.json()
+      expect(data.message).toMatch(/token/i)
+    })
+
+    it('legacy endpoints return error', async () => {
       const res = await app.request('/api/accounts/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -206,28 +269,6 @@ describe('NanoVault API', () => {
       }, mockEnv)
 
       expect(res.status).toBe(400)
-      const data: any = await res.json()
-      expect(data.message).toContain('exists')
-    })
-
-    it('rejects missing required fields', async () => {
-      mockEnv.DB.get.mockResolvedValue(null)
-
-      const invalidRequests = [
-        { email: 'test@example.com' },
-        { masterPasswordHash: 'hash' },
-        { email: 'test@example.com', masterPasswordHash: 'hash' }
-      ]
-
-      for (const body of invalidRequests) {
-        const res = await app.request('/api/accounts/register', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body)
-        }, mockEnv)
-
-        expect(res.status).toBe(400)
-      }
     })
   })
 

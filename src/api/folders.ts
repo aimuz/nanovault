@@ -1,29 +1,23 @@
 /**
- * Folders API Module
+ * Folders Handlers Module
  * 
- * Handles: CRUD operations for folders
- * 
- * Atomicity Strategy: Same as ciphers - parallel writes, ordered deletes.
+ * Exports handler functions for: CRUD operations for folders
  */
 
-import { Hono } from 'hono'
+import { Context } from 'hono'
 import type { Bindings, Folder } from '../types'
 import { addFolderToIndex, removeFolderFromIndex } from '../storage/kv'
 import { getFolder, putFolder, deleteFolder } from '../storage/s3'
 import { errorResponse } from './auth'
-import { createJwtMiddleware } from '../utils/auth'
+import { notifyFolderCreate, notifyFolderUpdate, notifyFolderDelete } from './push'
 
-const folders = new Hono<{ Bindings: Bindings }>()
-
-// Apply JWT middleware to folder routes only
-folders.use('/api/folders/*', createJwtMiddleware)
-folders.use('/api/folders', createJwtMiddleware)
+type AppContext = Context<{ Bindings: Bindings }>
 
 // --------------------------------------------------------------------------
 // Helper: Build folder from request body
 // --------------------------------------------------------------------------
 
-function buildFolder(body: Record<string, any>, id?: string): Folder {
+const buildFolder = (body: Record<string, any>, id?: string): Folder => {
     return {
         id: id ?? body.Id ?? body.id ?? crypto.randomUUID(),
         name: body.Name ?? body.name ?? '',
@@ -33,10 +27,10 @@ function buildFolder(body: Record<string, any>, id?: string): Folder {
 }
 
 // --------------------------------------------------------------------------
-// Create Folder
+// Create Folder Handler
 // --------------------------------------------------------------------------
 
-folders.post('/api/folders', async (c) => {
+export const handleCreate = async (c: AppContext) => {
     const payload = c.get('jwtPayload')
     const userId = payload.sub as string
     const body = await c.req.json<any>()
@@ -52,14 +46,16 @@ folders.post('/api/folders', async (c) => {
         addFolderToIndex(c.env.DB, userId, newFolder.id)
     ])
 
+    notifyFolderCreate(c.env, userId, newFolder.id, newFolder.revisionDate)
+
     return c.json(newFolder)
-})
+}
 
 // --------------------------------------------------------------------------
-// Get Folder
+// Get Folder Handler
 // --------------------------------------------------------------------------
 
-folders.get('/api/folders/:id', async (c) => {
+export const handleGet = async (c: AppContext) => {
     const payload = c.get('jwtPayload')
     const userId = payload.sub as string
     const folderId = c.req.param('id')
@@ -70,13 +66,13 @@ folders.get('/api/folders/:id', async (c) => {
     }
 
     return c.json(folder)
-})
+}
 
 // --------------------------------------------------------------------------
-// Update Folder
+// Update Folder Handler
 // --------------------------------------------------------------------------
 
-folders.put('/api/folders/:id', async (c) => {
+export const handleUpdate = async (c: AppContext) => {
     const payload = c.get('jwtPayload')
     const userId = payload.sub as string
     const folderId = c.req.param('id')
@@ -95,14 +91,16 @@ folders.put('/api/folders/:id', async (c) => {
 
     await Promise.all(promises)
 
+    notifyFolderUpdate(c.env, userId, updatedFolder.id, updatedFolder.revisionDate)
+
     return c.json(updatedFolder)
-})
+}
 
 // --------------------------------------------------------------------------
-// Delete Folder
+// Delete Folder Handler
 // --------------------------------------------------------------------------
 
-folders.delete('/api/folders/:id', async (c) => {
+export const handleDelete = async (c: AppContext) => {
     const payload = c.get('jwtPayload')
     const userId = payload.sub as string
     const folderId = c.req.param('id')
@@ -110,7 +108,7 @@ folders.delete('/api/folders/:id', async (c) => {
     await deleteFolder(c.env.VAULT, userId, folderId)
     await removeFolderFromIndex(c.env.DB, userId, folderId)
 
-    return c.json({}, 200)
-})
+    notifyFolderDelete(c.env, userId, folderId)
 
-export default folders
+    return c.json({}, 200)
+}

@@ -18,3 +18,13 @@ preview_id = "YOUR_KV_PREVIEW_ID"
 binding = "VAULT"
 bucket_name = "nanovault-storage"
 preview_bucket_name = "nanovault-storage-preview"
+
+# Push Notifications (optional)
+# Get PUSH_INSTALLATION_ID and PUSH_INSTALLATION_KEY from https://bitwarden.com/host/
+# [vars]
+# PUSH_ENABLED = "true"
+# PUSH_INSTALLATION_ID = "your-installation-id"
+# PUSH_INSTALLATION_KEY = "your-installation-key"
+# For EU region, also set:
+# PUSH_RELAY_URI = "https://api.bitwarden.eu"
+# PUSH_IDENTITY_URI = "https://identity.bitwarden.eu"

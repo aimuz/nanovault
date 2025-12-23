@@ -3,43 +3,29 @@
  * 
  * Handles all KV operations for user data and vault indices.
  * Keys:
- *   user:{email}        -> UserData JSON
- *   user_id:{id}        -> email (index for ID lookups)
+ *   user:{email}         -> UserData JSON
  *   vault_index:{userId} -> VaultIndex JSON
  */
 
-import type { UserData, VaultIndex } from '../types'
+import type { UserData, VaultIndex, Device } from '../types'
 
 // --------------------------------------------------------------------------
 // User Operations
 // --------------------------------------------------------------------------
 
-export async function getUser(kv: KVNamespace, email: string): Promise<UserData | null> {
+export const getUser = async (kv: KVNamespace, email: string): Promise<UserData | null> => {
     const json = await kv.get(`user:${email.toLowerCase()}`)
     if (!json) return null
     return JSON.parse(json) as UserData
 }
 
-export async function putUser(kv: KVNamespace, user: UserData): Promise<void> {
-    const email = user.email.toLowerCase()
-
-    // Store user data
-    await kv.put(`user:${email}`, JSON.stringify(user))
-
-    // Store ID -> email index for getUserById
-    await kv.put(`user_id:${user.id}`, email)
+export const putUser = async (kv: KVNamespace, user: UserData): Promise<void> => {
+    await kv.put(`user:${user.email.toLowerCase()}`, JSON.stringify(user))
 }
 
-export async function getUserById(kv: KVNamespace, id: string): Promise<UserData | null> {
-    const email = await kv.get(`user_id:${id}`)
-    if (!email) return null
-    return getUser(kv, email)
-}
-
-export async function deleteUser(kv: KVNamespace, user: UserData): Promise<void> {
+export const deleteUser = async (kv: KVNamespace, user: UserData): Promise<void> => {
     const email = user.email.toLowerCase()
     await kv.delete(`user:${email}`)
-    await kv.delete(`user_id:${user.id}`)
     await kv.delete(`vault_index:${user.id}`)
 }
 
@@ -47,7 +33,7 @@ export async function deleteUser(kv: KVNamespace, user: UserData): Promise<void>
 // Vault Index Operations
 // --------------------------------------------------------------------------
 
-export async function getVaultIndex(kv: KVNamespace, userId: string): Promise<VaultIndex> {
+export const getVaultIndex = async (kv: KVNamespace, userId: string): Promise<VaultIndex> => {
     const json = await kv.get(`vault_index:${userId}`)
     if (!json) {
         return {
@@ -59,12 +45,12 @@ export async function getVaultIndex(kv: KVNamespace, userId: string): Promise<Va
     return JSON.parse(json) as VaultIndex
 }
 
-export async function putVaultIndex(kv: KVNamespace, userId: string, index: VaultIndex): Promise<void> {
+export const putVaultIndex = async (kv: KVNamespace, userId: string, index: VaultIndex): Promise<void> => {
     index.revision = new Date().toISOString()
     await kv.put(`vault_index:${userId}`, JSON.stringify(index))
 }
 
-export async function addCipherToIndex(kv: KVNamespace, userId: string, cipherId: string): Promise<void> {
+export const addCipherToIndex = async (kv: KVNamespace, userId: string, cipherId: string): Promise<void> => {
     const index = await getVaultIndex(kv, userId)
     if (!index.cipherIds.includes(cipherId)) {
         index.cipherIds.push(cipherId)
@@ -72,7 +58,7 @@ export async function addCipherToIndex(kv: KVNamespace, userId: string, cipherId
     }
 }
 
-export async function removeCipherFromIndex(kv: KVNamespace, userId: string, cipherId: string): Promise<void> {
+export const removeCipherFromIndex = async (kv: KVNamespace, userId: string, cipherId: string): Promise<void> => {
     const index = await getVaultIndex(kv, userId)
     const i = index.cipherIds.indexOf(cipherId)
     if (i !== -1) {
@@ -81,7 +67,7 @@ export async function removeCipherFromIndex(kv: KVNamespace, userId: string, cip
     }
 }
 
-export async function addFolderToIndex(kv: KVNamespace, userId: string, folderId: string): Promise<void> {
+export const addFolderToIndex = async (kv: KVNamespace, userId: string, folderId: string): Promise<void> => {
     const index = await getVaultIndex(kv, userId)
     if (!index.folderIds.includes(folderId)) {
         index.folderIds.push(folderId)
@@ -89,11 +75,66 @@ export async function addFolderToIndex(kv: KVNamespace, userId: string, folderId
     }
 }
 
-export async function removeFolderFromIndex(kv: KVNamespace, userId: string, folderId: string): Promise<void> {
+export const removeFolderFromIndex = async (kv: KVNamespace, userId: string, folderId: string): Promise<void> => {
     const index = await getVaultIndex(kv, userId)
     const i = index.folderIds.indexOf(folderId)
     if (i !== -1) {
         index.folderIds.splice(i, 1)
         await putVaultIndex(kv, userId, index)
+    }
+}
+
+// --------------------------------------------------------------------------
+// Device Operations (for push notifications)
+// Keys: device:{identifier} -> Device JSON
+//       device_index:{userId} -> string[] of device identifiers
+// --------------------------------------------------------------------------
+
+export const getDevice = async (kv: KVNamespace, identifier: string): Promise<Device | null> => {
+    const json = await kv.get(`device:${identifier}`)
+    if (!json) return null
+    return JSON.parse(json) as Device
+}
+
+export const getDevicesByUser = async (kv: KVNamespace, userId: string): Promise<Device[]> => {
+    const indexJson = await kv.get(`device_index:${userId}`)
+    if (!indexJson) return []
+
+    const identifiers: string[] = JSON.parse(indexJson)
+    const devices: Device[] = []
+
+    for (const id of identifiers) {
+        const device = await getDevice(kv, id)
+        if (device) devices.push(device)
+    }
+
+    return devices
+}
+
+export const putDevice = async (kv: KVNamespace, device: Device): Promise<void> => {
+    await kv.put(`device:${device.identifier}`, JSON.stringify(device))
+
+    // Update user's device index
+    const indexJson = await kv.get(`device_index:${device.userId}`)
+    const identifiers: string[] = indexJson ? JSON.parse(indexJson) : []
+
+    if (!identifiers.includes(device.identifier)) {
+        identifiers.push(device.identifier)
+        await kv.put(`device_index:${device.userId}`, JSON.stringify(identifiers))
+    }
+}
+
+export const deleteDevice = async (kv: KVNamespace, device: Device): Promise<void> => {
+    await kv.delete(`device:${device.identifier}`)
+
+    // Update user's device index
+    const indexJson = await kv.get(`device_index:${device.userId}`)
+    if (indexJson) {
+        const identifiers: string[] = JSON.parse(indexJson)
+        const i = identifiers.indexOf(device.identifier)
+        if (i !== -1) {
+            identifiers.splice(i, 1)
+            await kv.put(`device_index:${device.userId}`, JSON.stringify(identifiers))
+        }
     }
 }
