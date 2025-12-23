@@ -1,0 +1,20 @@
+name = "nanovault"
+main = "src/index.ts"
+compatibility_date = "2023-12-01"
+assets = { directory = "./public", binding = "ASSETS" }
+
+[dev]
+local_protocol = "https"
+
+[observability]
+enabled = true
+
+[[kv_namespaces]]
+binding = "DB"
+id = "YOUR_KV_NAMESPACE_ID" # Run `wrangler kv:namespace create DB` to get this
+preview_id = "YOUR_KV_PREVIEW_ID"
+
+[[r2_buckets]]
+binding = "VAULT"
+bucket_name = "nanovault-storage"
+preview_bucket_name = "nanovault-storage-preview"
