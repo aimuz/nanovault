@@ -11,12 +11,12 @@ enabled = true
 
 [[kv_namespaces]]
 binding = "DB"
-id = "YOUR_KV_NAMESPACE_ID" # Run `wrangler kv:namespace create DB` to get this
+# id = "YOUR_KV_NAMESPACE_ID" # Run `wrangler kv:namespace create DB` to get this
 preview_id = "YOUR_KV_PREVIEW_ID"
 
 [[r2_buckets]]
 binding = "VAULT"
-bucket_name = "nanovault-storage"
+# bucket_name = "nanovault-storage"
 preview_bucket_name = "nanovault-storage-preview"
 
 # Push Notifications (optional)
@@ -28,3 +28,4 @@ preview_bucket_name = "nanovault-storage-preview"
 # For EU region, also set:
 # PUSH_RELAY_URI = "https://api.bitwarden.eu"
 # PUSH_IDENTITY_URI = "https://identity.bitwarden.eu"
+
