@@ -10,6 +10,7 @@
 - **保险库**: 完整同步、密码项 CRUD（登录、安全笔记、银行卡、身份、SSH 密钥）、文件夹 CRUD、批量导入、软删除/恢复
 - **安全**: 服务端密码哈希、SecurityStamp token 失效机制
 - **存储**: Cloudflare KV + R2、等效域名（全局和自定义）
+- **邮件**: 通过 [Resend](https://resend.com) 发送邮件 (可选)
 - **推送通知** (可选): 通过 Bitwarden 中继服务实现移动端同步
 
 ### ❌ 暂不支持
@@ -22,7 +23,6 @@
 - WebAuthn / 通行密钥
 - 无密码登录
 - WebSocket 实时同步
-- 邮件发送（token 打印到控制台）
 
 ## 安装配置
 
@@ -64,3 +64,10 @@ npm run deploy  # 部署到 Cloudflare
    ```
 
 > ⚠️ 仅支持官方 App Store / Google Play 版本的 Bitwarden App
+
+## 路线图
+
+- [x] 通过 [Resend](https://resend.com) 发送邮件
+- [ ] 双因素认证 (2FA)
+- [ ] 附件支持
+- [ ] WebSocket 实时同步

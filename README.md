@@ -10,6 +10,7 @@ A lightweight Bitwarden-compatible server running on Cloudflare Workers.
 - **Vault**: Full sync, cipher CRUD (Login, SecureNote, Card, Identity, SSH Key), folder CRUD, bulk import, soft delete/restore
 - **Security**: Server-side password hashing, security stamp for token invalidation
 - **Storage**: Cloudflare KV + R2, equivalent domains (global & custom)
+- **Email**: Sending via [Resend](https://resend.com) (optional)
 - **Push Notifications** (optional): Mobile app sync via Bitwarden relay service
 
 ### ❌ Not Supported
@@ -22,7 +23,7 @@ A lightweight Bitwarden-compatible server running on Cloudflare Workers.
 - WebAuthn / Passkeys
 - Passwordless login
 - Real-time WebSocket sync
-- Email sending (tokens printed to console)
+- Real-time WebSocket sync
 
 ## Setup
 
@@ -64,3 +65,10 @@ Point your Bitwarden client (Self-hosted) to: `https://nanovault.<your-subdomain
    ```
 
 > ⚠️ Only works with official App Store / Google Play Bitwarden apps
+
+## Roadmap
+
+- [x] Email sending via [Resend](https://resend.com)
+- [ ] Two-factor authentication (2FA)
+- [ ] Attachments support
+- [ ] WebSocket real-time sync

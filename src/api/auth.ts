@@ -10,6 +10,7 @@ import type { Bindings, PreloginRequest, PreloginResponse, UserData, FinishRegis
 import { getUser, putUser, getDevice, putDevice } from '../storage/kv'
 import { getSecret } from '../utils/auth'
 import { isPushEnabled, registerDevice } from './push'
+import { sendMail } from '../utils/mail'
 
 type AppContext = Context<{ Bindings: Bindings }>
 
@@ -231,6 +232,24 @@ export const handleSendVerificationEmail = async (c: AppContext) => {
     }, secret)
 
     const registerUrl = `${baseUrl}/#/finish-signup/?email=${encodeURIComponent(email)}&token=${encodeURIComponent(registrationToken)}`
+
+    // Send actual email if Resend is configured
+    if (c.env.RESEND_API_KEY) {
+        await sendMail(
+            c.env,
+            email,
+            'Verify your email to register on Nanovault',
+            `
+            <h1>Welcome to Nanovault</h1>
+            <p>Please click the link below to complete your registration:</p>
+            <p><a href="${registerUrl}">Complete Registration</a></p>
+            <p>If the link doesn't work, copy and paste this URL into your browser:</p>
+            <pre>${registerUrl}</pre>
+            <p>This link will expire in 24 hours.</p>
+            `
+        )
+    }
+
     console.log(`[NanoVault] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`)
     console.log(`[NanoVault] Registration request for: ${email}`)
     console.log(`[NanoVault] Complete registration at:`)
@@ -281,6 +300,23 @@ export const handleEmailToken = async (c: AppContext) => {
     }, secret)
 
     const baseUrl = new URL(c.req.url).origin
+
+    // Send actual email if Resend is configured
+    if (c.env.RESEND_API_KEY) {
+        await sendMail(
+            c.env,
+            newEmail,
+            'Verify your new email address for Nanovault',
+            `
+            <h1>Change Email Request</h1>
+            <p>You requested to change your email to <b>${newEmail}</b>.</p>
+            <p>Please use the following token in your Bitwarden client to complete the change:</p>
+            <pre style="background: #f4f4f4; padding: 10px; border-radius: 5px;">${emailChangeToken}</pre>
+            <p>This token will expire in 24 hours.</p>
+            `
+        )
+    }
+
     console.log(`[NanoVault] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`)
     console.log(`[NanoVault] Email change request for: ${user.email} -> ${newEmail}`)
     console.log(`[NanoVault] Token: ${emailChangeToken}`)

@@ -11,6 +11,9 @@ export interface Bindings {
   PUSH_INSTALLATION_KEY?: string
   PUSH_RELAY_URI?: string
   PUSH_IDENTITY_URI?: string
+  // Email config (optional)
+  RESEND_API_KEY?: string
+  MAIL_FROM?: string
 }
 
 // Bitwarden device types
@@ -276,16 +279,6 @@ export interface GlobalEquivalentDomain {
   excluded: boolean
 }
 
-
-/** Bitwarden-style error response */
-export const errorResponse = (c: AppContext, message: string, statusCode: 400 | 401 | 403 | 404 | 500 = 400) => {
-  return c.json({
-    message: message,
-    validationErrors: { '': [message] },
-    errorModel: { message: message, validationErrors: { '': [message] } },
-    object: 'error'
-  }, statusCode)
-}
 
 // --------------------------------------------------------------------------
 // Utility Types
