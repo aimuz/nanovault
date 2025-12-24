@@ -441,14 +441,14 @@ export const handleToken = async (c: AppContext) => {
                 const payload = await verify(refreshToken, secret)
 
                 if (payload.token_type !== 'refresh') {
-                    return c.json({ error: 'invalid_grant', error_description: 'Invalid token type' }, 400)
+                    return errorResponse(c, 'Invalid token type')
                 }
 
                 const user = await getUser(c.env.DB, payload.email as string)
                 if (!user) throw new Error('User deleted')
 
                 if (payload.stamp !== user.securityStamp) {
-                    return c.json({ error: 'invalid_grant', error_description: 'Token has been revoked' }, 400)
+                    return errorResponse(c, 'Token has been revoked')
                 }
 
                 const newAccessToken = await sign(buildJwtPayload(user, ACCESS_TOKEN_TTL, 'access'), secret)
@@ -456,17 +456,17 @@ export const handleToken = async (c: AppContext) => {
 
                 return c.json(buildTokenResponse(user, newAccessToken, newRefreshToken))
             } catch {
-                return c.json({ error: 'invalid_grant', error_description: 'Invalid or expired refresh token' }, 400)
+                return errorResponse(c, 'Invalid or expired refresh token')
             }
         }
 
         // --- Password Flow ---
         if (body['grant_type'] !== 'password') {
-            return c.json({ error: 'unsupported_grant_type', error_description: 'Supported: password, refresh_token' }, 400)
+            return errorResponse(c, 'Unsupported grant_type. Supported: password, refresh_token')
         }
 
         const emailInput = body['username'] as string
-        if (!emailInput) return c.json({ error: 'invalid_grant' }, 400)
+        if (!emailInput) return errorResponse(c, 'Username required')
 
         const email = emailInput.toLowerCase()
         const password = body['password'] as string
@@ -474,7 +474,7 @@ export const handleToken = async (c: AppContext) => {
         const user = await getUser(c.env.DB, email)
         if (!user) {
             console.log(`Login failed: user not found`)
-            return c.json({ error: 'invalid_grant', error_description: 'Invalid username or password' }, 400)
+            return errorResponse(c, 'Invalid username or password')
         }
 
         let passwordToCheck = password
@@ -485,7 +485,7 @@ export const handleToken = async (c: AppContext) => {
         const incomingServerHash = await hashPassword(passwordToCheck, user.securityStamp)
         if (user.masterPasswordHash !== incomingServerHash) {
             console.log(`Login failed: hash mismatch`)
-            return c.json({ error: 'invalid_grant', error_description: 'Invalid username or password' }, 400)
+            return errorResponse(c, 'Invalid username or password')
         }
 
         const accessToken = await sign(buildJwtPayload(user, ACCESS_TOKEN_TTL, 'access'), secret)
@@ -529,6 +529,6 @@ export const handleToken = async (c: AppContext) => {
         return c.json(buildTokenResponse(user, accessToken, refreshToken))
     } catch (e) {
         console.error('Token Error:', e)
-        return c.json({ error: 'invalid_request' }, 400)
+        return errorResponse(c, 'Invalid request')
     }
 }
