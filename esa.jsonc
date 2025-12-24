@@ -1,0 +1,14 @@
+{
+    "name": "nanovault",
+    "description": "Bitwarden-compatible password vault edge function",
+    "entry": "./src/entries/aliyun-esa.ts",
+    "installCommand": "npm install",
+    "assets": {
+        "directory": "./public"
+    },
+    "codeVersions": [],
+    "dev": {
+        "port": 18080,
+        "localUpstream": ""
+    }
+}

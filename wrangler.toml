@@ -1,5 +1,5 @@
 name = "nanovault"
-main = "src/index.ts"
+main = "src/entries/cloudflare.ts"
 compatibility_date = "2022-04-05"
 assets = { directory = "./public", binding = "ASSETS" }
 

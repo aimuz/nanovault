@@ -74,10 +74,16 @@ export const handleSync = async (c: AppContext) => {
     const user = await getUser(c.env.DB, payload.email)
     if (!user) return errorResponse(c, 'User not found', 401)
 
-    const [ciphers, folders] = await Promise.all([
-        listCiphers(c.env.VAULT, userId),
-        listFolders(c.env.VAULT, userId)
-    ])
+    let ciphers, folders
+    try {
+        [ciphers, folders] = await Promise.all([
+            listCiphers(c.env.VAULT, userId),
+            listFolders(c.env.VAULT, userId)
+        ])
+    } catch (err) {
+        console.error('Sync: Failed to load vault data', err)
+        return errorResponse(c, `Failed to load vault data: ${err}`, 500)
+    }
 
     const excludedGlobalTypes = user.excludedGlobalEquivalentDomains ?? []
     const globalEquivalentDomains: GlobalEquivalentDomain[] = GLOBAL_EQUIVALENT_DOMAINS.map(g => ({

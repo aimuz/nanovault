@@ -1,9 +1,10 @@
 import type { Context } from 'hono'
+import type { IKVStorage, IBlobStorage } from './storage/interfaces'
 
 // Environment bindings type - reused across modules
 export interface Bindings {
-  DB: KVNamespace
-  VAULT: R2Bucket
+  DB: IKVStorage
+  VAULT: IBlobStorage
   JWT_SECRET: string
   // Push notification config (optional)
   PUSH_ENABLED?: string
