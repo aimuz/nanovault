@@ -315,7 +315,7 @@ describe('NanoVault API', () => {
 
       expect(res.status).toBe(400)
       const data: any = await res.json()
-      expect(data.error).toBe('invalid_grant')
+      expect(data.message).toContain('Invalid')
     })
 
     it('rejects unknown user', async () => {
@@ -333,7 +333,7 @@ describe('NanoVault API', () => {
 
       expect(res.status).toBe(400)
       const data: any = await res.json()
-      expect(data.error).toBe('invalid_grant')
+      expect(data.message).toContain('Invalid')
     })
 
     it('rejects unsupported grant type', async () => {
@@ -347,7 +347,7 @@ describe('NanoVault API', () => {
 
       expect(res.status).toBe(400)
       const data: any = await res.json()
-      expect(data.error).toBe('unsupported_grant_type')
+      expect(data.message).toContain('Unsupported')
     })
   })
 

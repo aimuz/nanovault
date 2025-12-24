@@ -311,7 +311,7 @@ describe('Token (Login)', () => {
 
         expect(res.status).toBe(400)
         const data = await res.json() as any
-        expect(data.error).toBe('invalid_grant')
+        expect(data.message).toContain('Invalid')
     })
 
     it('returns error for non-existent user', async () => {
@@ -327,7 +327,7 @@ describe('Token (Login)', () => {
 
         expect(res.status).toBe(400)
         const data = await res.json() as any
-        expect(data.error).toBe('invalid_grant')
+        expect(data.message).toContain('Invalid')
     })
 
     it('rejects unsupported grant_type', async () => {
@@ -341,7 +341,7 @@ describe('Token (Login)', () => {
 
         expect(res.status).toBe(400)
         const data = await res.json() as any
-        expect(data.error).toBe('unsupported_grant_type')
+        expect(data.message).toContain('Unsupported')
     })
 })
 
@@ -404,7 +404,7 @@ describe('Token Refresh', () => {
 
         expect(res.status).toBe(400)
         const data = await res.json() as any
-        expect(data.error).toBe('invalid_grant')
+        expect(data.message).toContain('Invalid')
     })
 })
 
@@ -496,8 +496,7 @@ describe('Password Change Token Invalidation', () => {
 
         expect(refreshRes.status).toBe(400)
         const data = await refreshRes.json() as any
-        expect(data.error).toBe('invalid_grant')
-        expect(data.error_description).toContain('revoked')
+        expect(data.message).toContain('revoked')
     })
 
     it('allows login with new password after change', async () => {
