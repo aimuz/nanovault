@@ -8,6 +8,7 @@ import { Context } from 'hono'
 import type { Bindings, DomainsData, GlobalEquivalentDomain } from '../types'
 import { getUser, putUser } from '../storage/kv'
 import { errorResponse } from './auth'
+import { sendMail } from '../utils/mail'
 import { GLOBAL_EQUIVALENT_DOMAINS } from '../constants/domains'
 
 type AppContext = Context<{ Bindings: Bindings }>
@@ -117,7 +118,39 @@ export const handleFeatures = (c: AppContext) => {
 // --------------------------------------------------------------------------
 
 export const handleTwoFactor = (c: AppContext) => c.json([], 200)
-export const handlePasswordHint = (c: AppContext) => c.json({})
+export const handlePasswordHint = async (c: AppContext) => {
+    try {
+        const body = await c.req.json<any>()
+        const email = (body.email || '').toLowerCase()
+
+        if (!email) {
+            return c.json({}, 200)
+        }
+
+        const user = await getUser(c.env.DB, email)
+        if (user && user.masterPasswordHint) {
+            if (c.env.RESEND_API_KEY) {
+                await sendMail(
+                    c.env,
+                    email,
+                    'Your Nanovault Password Hint',
+                    `
+                    <h1>Password Hint</h1>
+                    <p>You requested a password hint for your Nanovault account.</p>
+                    <p>Your hint is: <b>${user.masterPasswordHint}</b></p>
+                    <p>If you did not request this hint, you can safely ignore this email.</p>
+                    `
+                )
+            }
+            console.log(`[NanoVault] Password hint request for ${email}: ${user.masterPasswordHint}`)
+        }
+
+        // Always return 200 OK to prevent account enumeration
+        return c.json({}, 200)
+    } catch (e) {
+        return c.json({}, 200)
+    }
+}
 export const handleOrganizationPolicies = (c: AppContext) => c.json([], 200)
 export const handleNotificationsHub = (c: AppContext) => c.json({ message: 'Notifications not supported' }, 200)
 export const handleNotificationsNegotiate = (c: AppContext) => c.json({ connectionId: '', availableTransports: [] }, 200)

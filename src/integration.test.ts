@@ -80,6 +80,7 @@ const registerUser = async (
         kdf?: number
         kdfIterations?: number
         name?: string
+        masterPasswordHint?: string
     }
 ) => {
     const { sign } = await import('hono/jwt')
@@ -102,6 +103,7 @@ const registerUser = async (
             userSymmetricKey: userData.key,
             kdf: userData.kdf ?? 0,
             kdfIterations: userData.kdfIterations ?? 600000,
+            masterPasswordHint: userData.masterPasswordHint,
             emailVerificationToken: registrationToken
         })
     }, env)
@@ -528,6 +530,50 @@ describe('Password Change Token Invalidation', () => {
         const data = await loginRes.json() as any
         expect(data.access_token).toBeDefined()
         expect(data.key).toBe('newKey456')
+    })
+})
+
+describe('Password Hint', () => {
+    let env: ReturnType<typeof createTestEnv>
+    beforeEach(() => {
+        env = createTestEnv()
+    })
+
+    it('returns 200 even if user does not exist (enumeration prevention)', async () => {
+        const res = await app.request('/api/accounts/password-hint', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: 'nonexistent@example.com' })
+        }, env)
+
+        expect(res.status).toBe(200)
+    })
+
+    it('returns 200 for user with hint', async () => {
+        await registerUser(env, {
+            email: 'hint@example.com',
+            masterPasswordHash: 'hash',
+            key: 'key',
+            masterPasswordHint: 'my special hint'
+        })
+
+        const res = await app.request('/api/accounts/password-hint', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: 'hint@example.com' })
+        }, env)
+
+        expect(res.status).toBe(200)
+    })
+
+    it('returns 200 even if email is missing', async () => {
+        const res = await app.request('/api/accounts/password-hint', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+        }, env)
+
+        expect(res.status).toBe(200)
     })
 })
 
@@ -1183,7 +1229,6 @@ describe('Integration: Config & Stubs', () => {
         const stubCases = [
             { path: '/api/devices/knowndevice', method: 'GET' },
             { path: '/api/two-factor', method: 'GET' },
-            { path: '/api/accounts/password-hint', method: 'POST' },
             { path: '/api/emergency-access/trusted', method: 'GET' },
             { path: '/api/emergency-access/granted', method: 'GET' },
             { path: '/notifications/hub', method: 'GET' },

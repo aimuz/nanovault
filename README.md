@@ -23,7 +23,6 @@ A lightweight Bitwarden-compatible server running on Cloudflare Workers.
 - WebAuthn / Passkeys
 - Passwordless login
 - Real-time WebSocket sync
-- Real-time WebSocket sync
 
 ## Setup
 
